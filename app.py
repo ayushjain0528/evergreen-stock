@@ -206,44 +206,50 @@ def screen_stock():
 def screen_addstock():
     items, _, tab = load()
     st.subheader("Add stock")
-    st.caption("Use this to put in the stock you have. It is added to what is already there.")
+    st.caption("Choose from the lists. If something is not there, pick 'Other' and type it.")
+    ver = st.session_state.setdefault("as_ver", 0); k = lambda n: "%s_%d" % (n, ver)
+    OTHER = "Other (type it)"
     cats = [c for c in L.categories(S.rows("Items"), S.rows("Lists")) if c in set(items["category"])]
-    cat = st.selectbox("1. Category", cats, index=None, placeholder="Choose category", key="as_c")
-    sub = items[items["category"] == cat] if cat else items.iloc[0:0]
-    brands = sorted(sub["brand"].unique())
-    brand = st.selectbox("2. Brand", brands, index=None, placeholder="Choose brand", key="as_b") if cat else None
-    sub2 = sub[sub["brand"] == brand] if brand else sub.iloc[0:0]
-    labels = {}
-    for i in sub2.index:
-        lab = sub2.loc[i, "name"]
-        while lab in labels: lab += " ·"
-        labels[lab] = i
-    pick = st.selectbox("3. Item / size", list(labels), index=None, placeholder="Choose item", key="as_i") if brand else None
-    it = sub2.loc[labels[pick]] if pick else None
-    if it is not None:
-        have = float(tab.loc[tab["id"] == it["id"], "good"].iloc[0])
-        st.info("Unit: **%s**   ·   Now in stock: **%s**" % (it["unit"], L.fmt(have)))
-    with st.form("addstock", clear_on_submit=True):
-        qty = qty_box("4. Quantity to add", unit=(it["unit"] if it is not None else ""))
-        if st.form_submit_button("Save"):
-            if it is None: st.error("Choose category, brand and item first.")
-            elif run(L.add_stock, ME, it["id"], qty, today(), "", nonce("addstock"), ok="Added %s %s" % (L.fmt(qty), it["name"])): burn("addstock")
+    cat = st.selectbox("1. Category", cats + [OTHER], index=None, placeholder="Choose category", key=k("c"))
+    if cat == OTHER: cat = st.text_input("Type the new category", key=k("ct")).strip()
+    brand = None
+    if cat:
+        known = sorted(items[items["category"] == cat]["brand"].unique()) if cat in cats else sorted(items["brand"].unique())
+        brand = st.selectbox("2. Brand", list(known) + [OTHER], index=None, placeholder="Choose brand", key=k("b"))
+        if brand == OTHER: brand = st.text_input("Type the new brand", key=k("bt")).strip()
+    it = None; new_item = False; nm = sp = unit = ""
+    if cat and brand:
+        sub = items[(items["category"] == cat) & (items["brand"] == brand)]
+        labels = {}
+        for i in sub.index:
+            lab = sub.loc[i, "name"]
+            while lab in labels: lab += " ·"
+            labels[lab] = i
+        pick = st.selectbox("3. Item / size", list(labels) + [OTHER], index=None, placeholder="Choose item / size", key=k("i"))
+        if pick == OTHER:
+            new_item = True
+            c1, c2 = st.columns(2)
+            nm = c1.text_input("Item name (e.g. 16MM Round)", key=k("nm")).strip(); sp = c2.text_input("Size / details (e.g. 400mtr 40cm)", key=k("sp")).strip()
+            unit = st.selectbox("Unit", ["rolls", "pieces", "sets", "bags", "boxes", "kg", "nos", "mtr", OTHER], index=None, placeholder="Choose unit", key=k("u"))
+            if unit == OTHER: unit = st.text_input("Type the unit", key=k("ut")).strip()
+        elif pick:
+            it = sub.loc[labels[pick]]
+            have = float(tab.loc[tab["id"] == it["id"], "good"].iloc[0])
+            st.info("Unit: **%s**   ·   Now in stock: **%s**" % (it["unit"], L.fmt(have)))
+    qty = qty_box("4. Quantity to add", key=k("q"), unit=(it["unit"] if it is not None else unit or ""))
+    if st.button("Save", type="primary", key=k("s")):
+        iid = None
+        if new_item:
+            if not (cat and brand and nm and unit): st.error("Fill the item name and unit.")
+            elif not qty: st.error("Enter the quantity.")
+            elif run(L.add_item, cat, brand, nm, sp, unit, 0.0, 0.0):
+                row = [r for r in S.rows("Items") if r["category"] == cat and r["brand"] == brand and r["item"].lower() == nm.lower() and r["spec"].lower() == sp.lower()]
+                iid = row[-1]["id"] if row else None
+        elif it is not None: iid = it["id"]
+        else: st.error("Choose the category, brand and item first.")
+        if iid and run(L.add_stock, ME, iid, qty, today(), "", nonce("addstock"), ok="Added %s" % L.fmt(qty)):
+            burn("addstock"); st.session_state["as_ver"] = ver + 1; st.rerun()
     recent(["opening"])
-    with st.expander("➕ Can't find it? Add a new category, brand or size"):
-        st.caption("Pick an existing category or brand from the list, or choose 'Other' and type a new one. Price can be added later by the admin.")
-        allc = L.categories(S.rows("Items"), S.rows("Lists")); allb = sorted({r["brand"] for r in S.rows("Items") if r["brand"]})
-        nc = choose_other("Category", allc, "ni_c"); nb = choose_other("Brand", allb, "ni_b")
-        un = choose_other("Unit", ["rolls", "pieces", "sets", "bags", "boxes", "kg", "nos", "mtr"], "ni_u")
-        with st.form("newitem_staff", clear_on_submit=True):
-            nm = st.text_input("Item name (e.g. 16MM Round)"); sp = st.text_input("Size / details (e.g. 400mtr 40cm)")
-            oq = st.number_input("Quantity you have now (optional)", min_value=0.0, value=None, step=1.0, format="%g", placeholder="0")
-            if st.form_submit_button("Create item"):
-                if not nc or not nb or not un: st.error("Choose the category, brand and unit (or pick Other and type it).")
-                elif run(L.add_item, nc, nb, nm, sp, un, 0.0, 0.0, ok="Item created"):
-                    if oq:
-                        new = [r for r in S.rows("Items") if r["item"].lower() == nm.strip().lower() and r["spec"].lower() == sp.strip().lower() and r["brand"].lower() == nb.strip().lower()]
-                        if new: run(L.add_stock, ME, new[-1]["id"], oq, today(), "", new_id())
-                    st.rerun()
 
 
 def screen_production():
