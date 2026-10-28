@@ -1,0 +1,5 @@
+trial_data/
+__pycache__/
+.streamlit/secrets.toml
+secrets.toml
+*.json.key
