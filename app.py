@@ -195,6 +195,34 @@ def screen_stock():
     st.caption("%d items shown. Other places stock can sit: B-grade %s · To recycle %s · Scrap %s" % (len(out), L.fmt(tab["bgrade"].sum()), L.fmt(tab["recycle"].sum()), L.fmt(tab["scrap"].sum())))
 
 
+def screen_addstock():
+    items, _, tab = load()
+    st.subheader("Add stock")
+    st.caption("Use this to put in the stock you have. It is added to what is already there.")
+    cats = [c for c in L.categories(S.rows("Items"), S.rows("Lists")) if c in set(items["category"])]
+    cat = st.selectbox("1. Category", cats, index=None, placeholder="Choose category", key="as_c")
+    sub = items[items["category"] == cat] if cat else items.iloc[0:0]
+    brands = sorted(sub["brand"].unique())
+    brand = st.selectbox("2. Brand", brands, index=None, placeholder="Choose brand", key="as_b") if cat else None
+    sub2 = sub[sub["brand"] == brand] if brand else sub.iloc[0:0]
+    labels = {}
+    for i in sub2.index:
+        lab = sub2.loc[i, "name"]
+        while lab in labels: lab += " ·"
+        labels[lab] = i
+    pick = st.selectbox("3. Item / size", list(labels), index=None, placeholder="Choose item", key="as_i") if brand else None
+    it = sub2.loc[labels[pick]] if pick else None
+    if it is not None:
+        have = float(tab.loc[tab["id"] == it["id"], "good"].iloc[0])
+        st.info("Unit: **%s**   ·   Now in stock: **%s**" % (it["unit"], L.fmt(have)))
+    with st.form("addstock", clear_on_submit=True):
+        qty = qty_box("4. Quantity to add", unit=(it["unit"] if it is not None else ""))
+        if st.form_submit_button("Save"):
+            if it is None: st.error("Choose category, brand and item first.")
+            elif run(L.add_stock, ME, it["id"], qty, today(), "", nonce("addstock"), ok="Added %s %s" % (L.fmt(qty), it["name"])): burn("addstock")
+    recent(["opening"])
+
+
 def screen_production():
     items, _, _ = load()
     st.subheader("Production")
@@ -442,6 +470,12 @@ def screen_admin():
         if st.button("Update the Google Sheet now"):
             try: L.sync_register(S); S.synced = S.writes; st.toast("Sheet updated", icon="✅")
             except Exception as e: st.error("Could not update the sheet: %s" % str(e)[:200])
+        st.divider(); st.markdown("**Start again with zero stock**")
+        st.caption("Sets every item's stock to 0. Nothing is deleted; the history stays. Use it once before you begin.")
+        sure = st.text_input("Type RESET to confirm", key="reset_ok")
+        if st.button("Set all stock to zero") and sure.strip() == "RESET":
+            n = L.reset_all_stock(S, ME); st.toast("Stock set to zero for %d items" % n, icon="✅")
+        st.divider()
         st.write("Your data lives in %s." % ("your Google Sheet (you can open it any time)" if LIVE else "the folder `trial_data` on this computer"))
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w") as z:
@@ -450,7 +484,7 @@ def screen_admin():
         st.download_button("Download a full backup (zip)", buf.getvalue(), "evergreen-backup-%s.zip" % today(), "application/zip")
 
 
-SCREENS = {"Stock": screen_stock, "Production": screen_production, "Dispatch": screen_dispatch, "Orders": screen_orders, "Returns": screen_returns,
+SCREENS = {"Stock": screen_stock, "Add Stock": screen_addstock, "Production": screen_production, "Dispatch": screen_dispatch, "Orders": screen_orders, "Returns": screen_returns,
            "Raw & Waste": screen_raw, "Count": screen_count, "Reports": screen_reports, "Admin": screen_admin}
 
 st.markdown("### 🌿 Evergreen Stock" + ("" if LIVE else "  ·  TRIAL"))

@@ -8,9 +8,9 @@ BUCKETS = ["good", "hold", "bgrade", "recycle", "scrap"]
 BUCKET_NAME = {"good": "Good stock", "hold": "On hold (returns)", "bgrade": "B-grade", "recycle": "To recycle", "scrap": "Scrap"}
 ROLES = ["admin", "supervisor", "operator", "loader", "sales"]
 NAV = {
-    "admin":      ["Stock", "Production", "Dispatch", "Orders", "Returns", "Raw & Waste", "Count", "Reports", "Admin"],
-    "supervisor": ["Stock", "Production", "Dispatch", "Orders", "Returns", "Raw & Waste", "Count", "Reports"],
-    "operator":   ["Stock", "Production", "Raw & Waste", "Count"],
+    "admin":      ["Stock", "Add Stock", "Production", "Dispatch", "Orders", "Returns", "Raw & Waste", "Count", "Reports", "Admin"],
+    "supervisor": ["Stock", "Add Stock", "Production", "Dispatch", "Orders", "Returns", "Raw & Waste", "Count", "Reports"],
+    "operator":   ["Stock", "Add Stock", "Production", "Raw & Waste", "Count"],
     "loader":     ["Stock", "Dispatch", "Returns"],
     "sales":      ["Stock", "Orders", "Returns"],
 }
@@ -103,6 +103,17 @@ def add_dispatch(store, user, lines, vehicle, party, date, note="", allow_negati
                 nm = next((r for r in store.rows("Items") if r["id"] == iid), {})
                 raise Problem("Not enough stock for %s %s: you have %s, trying to send %s. Fix the count in the Count tab first." % (nm.get("item", ""), nm.get("spec", ""), fmt(have), fmt(q)))
     store.append("Moves", [_move(i, -q, "good", "dispatch", ref, user, date, vehicle=vehicle.strip(), party=party.strip(), note=note) for i, q in need.items()])
+
+def add_stock(store, user, item_id, qty, date, note="", ref=""):
+    """Opening / extra stock: simply adds to good stock."""
+    q = check_qty(qty); ref = ref or new_id()
+    if already(store, ref): return
+    store.append("Moves", [_move(item_id, q, "good", "opening", ref, user, date, note=note or "Stock added")])
+
+def reset_all_stock(store, user):
+    """Sets every item's good stock to zero by adding offsetting entries (nothing is deleted)."""
+    t = stock_table(items_df(store.rows("Items"), False), moves_df(store.rows("Moves")))
+    return add_counts(store, user, {r["id"]: 0 for _, r in t.iterrows() if abs(r["good"]) > 1e-9}, note="Stock reset to zero")
 
 def add_return(store, user, item_id, qty, party, date, note="", ref=""):
     q = check_qty(qty); ref = ref or new_id()
