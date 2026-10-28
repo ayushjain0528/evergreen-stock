@@ -47,9 +47,12 @@ class LocalBackend:
         with self.lock, open(self._f(t), "a", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
             for r in rows: w.writerow([r.get(c, "") for c in cols])
-    def replace_tab(self, tab, rows):
+    def replace_tab(self, tab, rows, **kw):
         with self.lock, open(os.path.join(self.path, tab.replace(" ", "_") + ".csv"), "w", newline="", encoding="utf-8") as f:
             csv.writer(f).writerows(rows)
+    def prune_tabs(self, prefix, keep):
+        names = sorted(f for f in os.listdir(self.path) if f.startswith(prefix.replace(" ", "_")))
+        for f in names[:-keep]: os.remove(os.path.join(self.path, f))
     def update_row(self, t, r, row):
         cols = SCHEMA[t]
         with self.lock:
@@ -109,6 +112,11 @@ class SheetsBackend:
         if not rows: return
         vals = [[r.get(c, "") for c in SCHEMA[t]] for r in rows]
         self._call("POST", "%s/%s/values/%s!A1:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS" % (self.API, self.sid, t), json={"values": vals})
+    def prune_tabs(self, prefix, keep):
+        meta = self._call("GET", "%s/%s?fields=sheets.properties" % (self.API, self.sid))
+        old = sorted((x["properties"]["title"], x["properties"]["sheetId"]) for x in meta["sheets"] if x["properties"]["title"].startswith(prefix))
+        if len(old) > keep:
+            self._call("POST", "%s/%s:batchUpdate" % (self.API, self.sid), json={"requests": [{"deleteSheet": {"sheetId": sid}} for _, sid in old[:-keep]]})
     def replace_tab(self, tab, rows, header_rows=2, fixed_cols=8):
         """Rewrite a human-readable report tab (created if missing). The app owns this tab; nobody types in it."""
         meta = self._call("GET", "%s/%s?fields=sheets.properties" % (self.API, self.sid))
@@ -140,6 +148,7 @@ class Store:
     def __init__(self, backend):
         self.b = backend; self.lock = threading.RLock(); self.snap = None; self.t = 0
         self.sync_fn = None; self.writes = 0; self.synced = 0; self.last_sync = 0.0; self.busy = False; self.timer = False; self.sync_error = ""
+        self.bk_day = None; self.bk_busy = False; self.bk_error = ""; self.bk_next = 0.0
         backend.ensure()
     def data(self):
         with self.lock:
@@ -187,3 +196,19 @@ class Store:
             with self.lock:
                 self.busy = False; self.last_sync = time.time()
                 if ok: self.synced = max(self.synced, mark)
+
+    # ---- one backup copy per day, kept inside the same Google Sheet (last 7 days)
+    def maybe_backup(self, fn):
+        d = today()
+        with self.lock:
+            if self.bk_day == d or self.bk_busy or time.time() < self.bk_next or not self.sync_fn: return
+            self.bk_busy = True; self.bk_next = time.time() + 600
+        def work():
+            ok = False
+            try: fn(self, d); ok = True; self.bk_error = ""
+            except Exception as e: self.bk_error = str(e)[:200]
+            finally:
+                with self.lock:
+                    self.bk_busy = False
+                    if ok: self.bk_day = d
+        threading.Thread(target=work, daemon=True).start()

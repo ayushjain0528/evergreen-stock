@@ -121,6 +121,7 @@ st.session_state["tok"] = token_in()
 if st.query_params.get("s") != st.session_state["tok"]: st.query_params["s"] = st.session_state["tok"]
 if st.context.cookies.get("sb_s") != st.session_state["tok"]: set_cookie(st.session_state["tok"])
 ME, ROLE = user["name"], user["role"]
+S.maybe_backup(L.backup_now)
 IS_ADMIN = ROLE == "admin"
 CAN_MANAGE = ROLE in ("admin", "supervisor")
 
@@ -130,21 +131,12 @@ def load():
     items = L.items_df(S.rows("Items")); moves = L.moves_df(S.rows("Moves"))
     return items, moves, L.stock_table(items, moves)
 
-def pick_item(key, items, kinds=None, label="Item"):
-    """Category filter + searchable item list. Returns item row or None."""
-    df = items if kinds is None else items[items["kind"].isin(kinds)]
-    cats = ["All"] + [c for c in L.categories(S.rows("Items"), S.rows("Lists")) if c in set(df["category"])]
-    c1, c2 = st.columns([1, 2])
-    cat = c1.selectbox("Category", cats, key=key + "_c")
-    sub = df if cat == "All" else df[df["category"] == cat]
-    if sub.empty: st.warning("No items here yet."); return None
-    labels = {}
-    for i in sub.index:
-        lab = sub.loc[i, "label"]
-        while lab in labels: lab += " ·"
-        labels[lab] = i
-    pick = c2.selectbox(label, list(labels), key=key + "_i", index=None, placeholder="Type to search…")
-    return None if pick is None else sub.loc[labels[pick]]
+def pick_item(pre, items, kinds=None, label=None):
+    """Same Category > Brand > Item pick as everywhere else (no 'Other'). Returns the item row or None."""
+    _, _, tab = load()
+    it, _, _ = entry_picker(pre, items, tab, kinds, allow_new=False)
+    return it
+
 
 def nonce(name):
     k = "nonce_" + name
@@ -155,26 +147,28 @@ def burn(name): st.session_state.pop("nonce_" + name, None)
 def qty_box(label="Quantity", key=None, unit=""):
     return st.number_input(label + (" (%s)" % unit if unit else ""), min_value=0.0, value=None, step=1.0, format="%g", key=key, placeholder="0")
 
+EDITABLE = ("production", "inward", "opening", "dispatch", "raw_in", "raw_use")
+
 def recent(types, n=8, mine_only=False):
-    """Recent entries with an Undo button."""
-    rows = [m for m in S.rows("Moves") if m["type"] in types and str(m["void"]) not in ("1", "True", "true")]
+    """Latest entries, each with Edit (quantity) and Undo."""
+    rows = [m for m in S.rows("Moves") if m["type"] in types and str(m["void"]) not in ("1", "True", "true") and m["bucket"] in ("good", "hold")]
     if mine_only or not CAN_MANAGE: rows = [m for m in rows if m["user"] == ME and m["date"] == today()]
-    seen, show = set(), []
-    for m in reversed(rows):
-        k = (m["ref"], m["type"])
-        if k in seen: continue
-        seen.add(k); show.append(m)
-        if len(show) >= n: break
+    show = list(reversed(rows))[:n]
     if not show: return
     items = L.items_df(S.rows("Items"), False).set_index("id")
     st.markdown("**Latest entries**")
     for m in show:
         nm = items.loc[m["item_id"], "name"] if m["item_id"] in items.index else m["item_id"]
+        un = items.loc[m["item_id"], "unit"] if m["item_id"] in items.index else ""
         extra = " · ".join(x for x in [m["vehicle"], m["party"], m["machine"], m["shift"]] if x)
-        c1, c2 = st.columns([4, 1])
-        c1.write("**%s** %s  \n%s · %s%s" % (L.fmt(abs(L.f(m["qty"]))), nm, m["date"], m["user"], (" · " + extra) if extra else ""))
-        if c2.button("Undo", key="u_" + m["id"]):
-            run(L.void_move_group, ME, m["id"], ok="Cancelled"); st.rerun()
+        c1, c2, c3 = st.columns([5, 1.3, 1.3])
+        c1.write("**%s %s** %s  \n%s · %s%s" % (L.fmt(abs(L.f(m["qty"]))), un, nm, m["date"], m["user"], (" · " + extra) if extra else ""))
+        if m["type"] in EDITABLE:
+            with c2.popover("Edit"):
+                q = st.number_input("Correct quantity", min_value=0.0, value=abs(L.f(m["qty"])), step=1.0, format="%g", key="eq" + m["id"])
+                if st.button("Save", key="es" + m["id"]) and run(L.edit_move_qty, ME, m["id"], q, ok="Corrected"): st.rerun()
+        if c3.button("Undo", key="u_" + m["id"]):
+            run(L.void_move_group if m["type"] in ("waste", "return_decide") else L.void_move, ME, m["id"], ok="Cancelled"); st.rerun()
 
 
 # ---------------------------------------------------------------- screens
@@ -195,6 +189,14 @@ def screen_stock():
     m2.metric("On hold (returns)", L.fmt(tab["hold"].sum()))
     if IS_ADMIN: m3.metric("Stock value", L.money(tab["value"].sum()))
     else: m3.metric("Low stock", int(((tab["min_level"] > 0) & (tab["good"] < tab["min_level"])).sum()))
+    low = tab[(tab["min_level"] > 0) & (tab["good"] < tab["min_level"])]
+    if not low.empty:
+        with st.expander("⚠️ Below minimum (%d)" % len(low), expanded=True):
+            st.dataframe(low[["brand", "name", "unit", "good", "min_level"]].rename(columns={"brand": "Brand", "name": "Item", "unit": "Unit", "good": "In stock", "min_level": "Minimum"}), hide_index=True, **WIDE)
+    tm = L.today_movement(S.rows("Items"), S.rows("Moves"))
+    with st.expander("Today's movement (%d items)" % len(tm), expanded=not tm.empty):
+        if tm.empty: st.caption("Nothing recorded today yet.")
+        else: st.dataframe(tm, hide_index=True, **WIDE, column_config={"In": st.column_config.NumberColumn(format="%g"), "Out": st.column_config.NumberColumn(format="%g")})
     cols = ["category", "brand", "name", "unit", "good", "hold"] + (["price", "value"] if IS_ADMIN else [])
     out = v[cols].rename(columns={"category": "Category", "brand": "Brand", "name": "Item", "unit": "Unit", "good": "In stock", "hold": "On hold", "price": "Price", "value": "Value"})
     cfg = {"In stock": st.column_config.NumberColumn(format="%g"), "On hold": st.column_config.NumberColumn(format="%g")}
@@ -203,18 +205,20 @@ def screen_stock():
     st.caption("%d items shown. Other places stock can sit: B-grade %s · To recycle %s · Scrap %s" % (len(out), L.fmt(tab["bgrade"].sum()), L.fmt(tab["recycle"].sum()), L.fmt(tab["scrap"].sum())))
 
 
-def entry_picker(pre, items, tab):
-    """Category > Brand > Item (each with 'Other'). Returns (item_row or None, new_item dict or None, unit text)."""
-    ver = st.session_state.setdefault(pre + "_ver", 0); k = lambda n: "%s_%s_%d" % (pre, n, ver)
-    OTHER = "Other (type it)"
+def entry_picker(pre, items, tab, kinds=None, allow_new=True):
+    """Category > Brand > Item. Category and brand stay selected after a save; only the item resets.
+    With allow_new, each list ends with 'Other (type it)'. Returns (item_row or None, new_item dict or None, unit text)."""
+    ver = st.session_state.setdefault(pre + "_ver", 0); k = lambda n: "%s_%s_%d" % (pre, n, ver); ks = lambda n: "%s_%s" % (pre, n)
+    OTHER = "Other (type it)"; extra = [OTHER] if allow_new else []
+    if kinds is not None: items = items[items["kind"].isin(kinds)]
     cats = [c for c in L.categories(S.rows("Items"), S.rows("Lists")) if c in set(items["category"])]
-    cat = st.selectbox("1. Category", cats + [OTHER], index=None, placeholder="Choose category", key=k("c"))
-    if cat == OTHER: cat = st.text_input("Type the new category", key=k("ct")).strip()
+    cat = st.selectbox("Category", cats + extra, index=None, placeholder="Choose category", key=ks("c"))
+    if cat == OTHER: cat = st.text_input("Type the new category", key=ks("ct")).strip()
     brand = None
     if cat:
         known = sorted(items[items["category"] == cat]["brand"].unique()) if cat in cats else sorted(items["brand"].unique())
-        brand = st.selectbox("2. Brand", list(known) + [OTHER], index=None, placeholder="Choose brand", key=k("b"))
-        if brand == OTHER: brand = st.text_input("Type the new brand", key=k("bt")).strip()
+        brand = st.selectbox("Brand", list(known) + extra, index=None, placeholder="Choose brand", key=ks("b"))
+        if brand == OTHER: brand = st.text_input("Type the new brand", key=ks("bt")).strip()
     if not (cat and brand): return None, None, ""
     sub = items[(items["category"] == cat) & (items["brand"] == brand)]
     labels = {}
@@ -222,7 +226,7 @@ def entry_picker(pre, items, tab):
         lab = sub.loc[i, "name"]
         while lab in labels: lab += " ·"
         labels[lab] = i
-    pick = st.selectbox("3. Item / size", list(labels) + [OTHER], index=None, placeholder="Choose item / size", key=k("i"))
+    pick = st.selectbox("Item / size", list(labels) + extra, index=None, placeholder="Choose item / size", key=k("i"))
     if pick == OTHER:
         c1, c2 = st.columns(2)
         nm = c1.text_input("Item name (e.g. 16MM Round)", key=k("nm")).strip(); sp = c2.text_input("Size / details (e.g. 400mtr 40cm)", key=k("sp")).strip()
@@ -253,7 +257,7 @@ def screen_addstock():
     st.caption("Use this to put in the stock you have now. It is added to what is already there. If something is not in a list, pick 'Other' and type it.")
     it, new, unit = entry_picker("as", items, tab)
     ver = st.session_state["as_ver"]
-    qty = qty_box("4. Quantity to add", key="as_q_%d" % ver, unit=unit)
+    qty = qty_box("Quantity to add", key="as_q_%d" % ver, unit=unit)
     if st.button("Save", type="primary", key="as_s_%d" % ver):
         if not qty: st.error("Enter the quantity.")
         else:
@@ -268,7 +272,7 @@ def screen_inward():
     st.caption("Goods received. Pick 'Other' in any list to add something new.")
     it, new, unit = entry_picker("iw", items, tab)
     ver = st.session_state["iw_ver"]
-    qty = qty_box("4. Quantity received", key="iw_q_%d" % ver, unit=unit)
+    qty = qty_box("Quantity received", key="iw_q_%d" % ver, unit=unit)
     if st.button("Save inward", type="primary", key="iw_save_%d" % ver):
         if not qty: st.error("Enter the quantity.")
         else:
@@ -289,7 +293,7 @@ def screen_production():
         note = st.text_input("Note (optional)")
         if st.form_submit_button("Save production"):
             if it is None: st.error("Choose the item first.")
-            elif run(L.add_production, ME, it["id"], qty, str(d), shift, mach, note, nonce("prod"), ok="Saved %s %s" % (L.fmt(qty), it["name"])): burn("prod")
+            elif run(L.add_production, ME, it["id"], qty, str(d), shift, mach, note, nonce("prod"), ok="Saved %s %s" % (L.fmt(qty), it["name"])): burn("prod"); reset_picker("prod"); st.rerun()
     recent(["production"])
 
 
@@ -301,15 +305,12 @@ def screen_dispatch():
     with c1: veh = combo("Vehicle", vehicles, "d_veh", "Choose vehicle")
     with c2: party = combo("Customer / place", parties, "d_party", "Type name")
     cart = st.session_state.setdefault("cart", [])
-    it = pick_item("disp", items, kinds=["finished"], label="Item to load")
-    if it is not None:
-        have = float(tab.loc[tab["id"] == it["id"], "good"].iloc[0])
-        st.caption("In stock now: **%s %s**" % (L.fmt(have), it["unit"]))
+    it = pick_item("disp", items, kinds=["finished"])
     with st.form("addline", clear_on_submit=True):
         qty = qty_box("Quantity to load", unit=(it["unit"] if it is not None else ""))
         if st.form_submit_button("➕ Add to this load"):
             if it is None or not qty: st.error("Choose an item and quantity.")
-            else: cart.append((it["id"], float(qty), it["name"], it["unit"])); st.rerun()
+            else: cart.append((it["id"], float(qty), it["name"], it["unit"])); reset_picker("disp"); st.rerun()
     if cart:
         st.markdown("**This load**")
         for i, (iid, q, nm, un) in enumerate(cart):
@@ -341,7 +342,7 @@ def screen_orders():
             qty = qty_box("Quantity ordered", unit=(it["unit"] if it is not None else "")); due = st.date_input("Needed by", value=date.today() + timedelta(days=3)); note = st.text_input("Note (optional)")
             if st.form_submit_button("Save order"):
                 if it is None: st.error("Choose the item first.")
-                else: run(L.add_order, ME, party or "", it["id"], qty, str(due), note, ok="Order saved")
+                elif run(L.add_order, ME, party or "", it["id"], qty, str(due), note, ok="Order saved"): reset_picker("ord"); st.rerun()
         st.markdown("**Open orders**")
         names = items.set_index("id")["name"].to_dict(); n = 0
         for o in reversed(S.rows("Orders")):
@@ -365,7 +366,7 @@ def screen_returns():
         qty = qty_box("Quantity returned", unit=(it["unit"] if it is not None else "")); note = st.text_input("Reason (optional)")
         if st.form_submit_button("Save return"):
             if it is None: st.error("Choose the item first.")
-            elif run(L.add_return, ME, it["id"], qty, party or "", today(), note, nonce("ret"), ok="Return saved — on hold"): burn("ret")
+            elif run(L.add_return, ME, it["id"], qty, party or "", today(), note, nonce("ret"), ok="Return saved — on hold"): burn("ret"); reset_picker("ret"); st.rerun()
     st.divider(); st.markdown("**Waiting for a decision**")
     pend = L.pending_returns(S)
     if not pend: st.caption("Nothing on hold.")
@@ -388,27 +389,26 @@ def screen_raw():
     st.subheader("Raw material & waste")
     a, b, c = st.tabs(["Raw in", "Raw used", "Waste / scrap"])
     with a:
-        it = pick_item("rin", items, kinds=["raw"], label="Raw material")
+        it = pick_item("rin", items, kinds=["raw"])
         with st.form("rin", clear_on_submit=True):
             qty = qty_box("Quantity received", unit=(it["unit"] if it is not None else "")); note = st.text_input("Supplier / note (optional)")
             if st.form_submit_button("Save raw in"):
                 if it is None: st.error("Choose the material first.")
-                elif run(L.add_raw, ME, it["id"], qty, today(), "in", note, nonce("rin"), ok="Saved"): burn("rin")
+                elif run(L.add_raw, ME, it["id"], qty, today(), "in", note, nonce("rin"), ok="Saved"): burn("rin"); reset_picker("rin"); st.rerun()
     with b:
-        it = pick_item("rout", items, kinds=["raw"], label="Raw material")
-        if it is not None: st.caption("In stock: **%s %s**" % (L.fmt(float(tab.loc[tab["id"] == it["id"], "good"].iloc[0])), it["unit"]))
+        it = pick_item("rout", items, kinds=["raw"])
         with st.form("rout", clear_on_submit=True):
             qty = qty_box("Quantity used", unit=(it["unit"] if it is not None else "")); note = st.text_input("Used for (optional)")
             if st.form_submit_button("Save raw used"):
                 if it is None: st.error("Choose the material first.")
-                elif run(L.add_raw, ME, it["id"], qty, today(), "out", note, nonce("rout"), ok="Saved"): burn("rout")
+                elif run(L.add_raw, ME, it["id"], qty, today(), "out", note, nonce("rout"), ok="Saved"): burn("rout"); reset_picker("rout"); st.rerun()
     with c:
-        it = pick_item("waste", items, label="Item wasted")
+        it = pick_item("waste", items)
         with st.form("waste", clear_on_submit=True):
             qty = qty_box("Quantity wasted", unit=(it["unit"] if it is not None else "")); note = st.text_input("Reason (optional)")
             if st.form_submit_button("Save waste"):
                 if it is None: st.error("Choose the item first.")
-                elif run(L.add_waste, ME, it["id"], qty, today(), note, nonce("waste"), ok="Saved"): burn("waste")
+                elif run(L.add_waste, ME, it["id"], qty, today(), note, nonce("waste"), ok="Saved"): burn("waste"); reset_picker("waste"); st.rerun()
     recent(["raw_in", "raw_use", "waste"])
 
 
@@ -527,6 +527,11 @@ def screen_admin():
     with t5:
         st.write("**Google Sheet register.** The app keeps a tab called *%s* in your Google Sheet up to date by itself: Opening, In, Out and Closing for every day, in your Excel layout. You never type in the Sheet." % ("Register " + today()[:7]))
         if S.sync_error: st.warning("Last sheet update failed: " + S.sync_error)
+        st.write("**Daily backup:** a copy of all your data is saved once a day as a tab called *Backup <date>* in the Google Sheet. The last 7 days are kept. " + ("Today's backup is done." if S.bk_day == today() else "Today's backup is not done yet."))
+        if S.bk_error: st.warning("Last backup problem: " + S.bk_error)
+        if st.button("Back up now"):
+            try: L.backup_now(S, today()); S.bk_day = today(); st.toast("Backup saved", icon="✅")
+            except Exception as e: st.error("Could not back up: %s" % str(e)[:200])
         if st.button("Update the Google Sheet now"):
             try: L.sync_register(S); S.synced = S.writes; st.toast("Sheet updated", icon="✅")
             except Exception as e: st.error("Could not update the sheet: %s" % str(e)[:200])

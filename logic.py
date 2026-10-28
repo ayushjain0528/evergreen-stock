@@ -178,6 +178,22 @@ def void_move_group(store, user, move_id):
         if x["ref"] == m["ref"] and x["type"] == m["type"] and str(x["void"]) not in ("1", "True", "true"):
             row = dict(x); row["void"] = "1"; row["note"] = (x["note"] + " [cancelled by %s]" % user).strip(); store.update("Moves", x["_r"], row)
 
+def void_move(store, user, move_id):
+    """Cancel one entry (nothing is deleted)."""
+    m = next((x for x in store.rows("Moves") if x["id"] == move_id), None)
+    if not m: raise Problem("Entry not found.")
+    row = dict(m); row["void"] = "1"; row["note"] = (m["note"] + " [cancelled by %s]" % user).strip(); store.update("Moves", m["_r"], row)
+
+def edit_move_qty(store, user, move_id, qty):
+    """Correct the quantity of one entry; keeps its direction and records who changed it."""
+    m = next((x for x in store.rows("Moves") if x["id"] == move_id), None)
+    if not m or str(m["void"]) in ("1", "True", "true"): raise Problem("Entry not found.")
+    if m["type"] not in ("production", "inward", "opening", "dispatch", "raw_in", "raw_use"): raise Problem("This kind of entry cannot be edited. Cancel it and enter it again.")
+    q = check_qty(qty); old = f(m["qty"]); new = q if old >= 0 else -q
+    if new < old and m["bucket"] == "good" and good_now(store, m["item_id"]) + (new - old) < -1e-9:
+        raise Problem("That would make the stock go below zero.")
+    row = dict(m); row["qty"] = round(new, 3); row["note"] = (m["note"] + " [edited %s -> %s by %s]" % (fmt(abs(old)), fmt(q), user)).strip(); store.update("Moves", m["_r"], row)
+
 def add_order(store, user, party, item_id, qty, due, note=""):
     q = check_qty(qty)
     if not party.strip(): raise Problem("Enter the customer name.")
@@ -315,3 +331,23 @@ def sync_register(store):
     tab, rows = register(store.rows("Items"), store.rows("Moves"))
     store.b.replace_tab(tab, rows)
     return tab
+
+
+# ---------- daily backup, today's movement ----------
+def backup_now(store, day):
+    """One tab 'Backup YYYY-MM-DD' holding Items, Moves and Orders as they are now. Keeps the last 7."""
+    rows = [["BACKUP", day, stamp()], [], ["ITEMS"], SCHEMA["Items"]]
+    rows += [[r.get(c, "") for c in SCHEMA["Items"]] for r in store.rows("Items")]
+    rows += [[], ["MOVES"], SCHEMA["Moves"]] + [[r.get(c, "") for c in SCHEMA["Moves"]] for r in store.rows("Moves")]
+    rows += [[], ["ORDERS"], SCHEMA["Orders"]] + [[r.get(c, "") for c in SCHEMA["Orders"]] for r in store.rows("Orders")]
+    store.b.replace_tab("Backup " + day, rows, header_rows=1)
+    store.b.prune_tabs("Backup ", 7)
+
+def today_movement(items_rows, moves_rows, day=None):
+    day = day or today(); items = items_df(items_rows, False).set_index("id"); mv = moves_df(moves_rows)
+    mv = mv[(~mv["void"]) & (mv["bucket"] == "good") & (mv["date"] == day)]
+    out = []
+    for iid, g in mv.groupby("item_id"):
+        if iid not in items.index: continue
+        out.append(dict(Item=items.loc[iid, "brand"] + " | " + items.loc[iid, "name"], Unit=items.loc[iid, "unit"], In=g[g["qty"] > 0]["qty"].sum(), Out=-g[g["qty"] < 0]["qty"].sum()))
+    return pd.DataFrame(out, columns=["Item", "Unit", "In", "Out"])
