@@ -32,6 +32,7 @@ def get_store():
     if b is None:
         b = LocalBackend(os.environ.get("STOCK_DATA_DIR", os.path.join(os.path.dirname(__file__), "trial_data")))
     s = Store(b)
+    s.sync_fn = L.sync_register
     L.seed_if_empty(s, sample=os.environ.get("TRIAL_SAMPLE") == "1")
     return s
 
@@ -436,6 +437,11 @@ def screen_admin():
             c1.write(("~~" if gone else "") + "%s · **%s** %s %s · %s · %s" % (m["ts"][5:16], m["type"], L.fmt(m["qty"]), items.get(m["item_id"], "?"), m["bucket"], m["user"]) + ("~~" if gone else ""))
             if not gone and c2.button("Cancel", key="h" + m["id"]): run(L.void_move_group, ME, m["id"], ok="Cancelled"); st.rerun()
     with t5:
+        st.write("**Google Sheet register.** The app keeps a tab called *%s* in your Google Sheet up to date by itself: Opening, In, Out and Closing for every day, in your Excel layout. You never type in the Sheet." % ("Register " + today()[:7]))
+        if S.sync_error: st.warning("Last sheet update failed: " + S.sync_error)
+        if st.button("Update the Google Sheet now"):
+            try: L.sync_register(S); S.synced = S.writes; st.toast("Sheet updated", icon="✅")
+            except Exception as e: st.error("Could not update the sheet: %s" % str(e)[:200])
         st.write("Your data lives in %s." % ("your Google Sheet (you can open it any time)" if LIVE else "the folder `trial_data` on this computer"))
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w") as z:

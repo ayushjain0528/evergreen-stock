@@ -1,5 +1,5 @@
 """Storage layer: one interface, two backends (local CSV for trial, Google Sheets for live)."""
-import csv, os, threading, time, uuid, hashlib, hmac, secrets
+import csv, os, threading, time, uuid, hashlib, hmac, secrets, urllib.parse
 from datetime import datetime
 from datetime import timezone, timedelta
 
@@ -47,6 +47,9 @@ class LocalBackend:
         with self.lock, open(self._f(t), "a", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
             for r in rows: w.writerow([r.get(c, "") for c in cols])
+    def replace_tab(self, tab, rows):
+        with self.lock, open(os.path.join(self.path, tab.replace(" ", "_") + ".csv"), "w", newline="", encoding="utf-8") as f:
+            csv.writer(f).writerows(rows)
     def update_row(self, t, r, row):
         cols = SCHEMA[t]
         with self.lock:
@@ -106,6 +109,23 @@ class SheetsBackend:
         if not rows: return
         vals = [[r.get(c, "") for c in SCHEMA[t]] for r in rows]
         self._call("POST", "%s/%s/values/%s!A1:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS" % (self.API, self.sid, t), json={"values": vals})
+    def replace_tab(self, tab, rows, header_rows=2, fixed_cols=8):
+        """Rewrite a human-readable report tab (created if missing). The app owns this tab; nobody types in it."""
+        meta = self._call("GET", "%s/%s?fields=sheets.properties" % (self.API, self.sid))
+        sid = next((x["properties"]["sheetId"] for x in meta["sheets"] if x["properties"]["title"] == tab), None)
+        if sid is None:
+            r = self._call("POST", "%s/%s:batchUpdate" % (self.API, self.sid), json={"requests": [{"addSheet": {"properties": {"title": tab}}}]})
+            sid = r["replies"][0]["addSheet"]["properties"]["sheetId"]
+        q = urllib.parse.quote(tab)
+        self._call("POST", "%s/%s/values/%s:clear" % (self.API, self.sid, q), json={})
+        for i in range(0, len(rows), 400):
+            self._call("PUT", "%s/%s/values/%s!A%d?valueInputOption=RAW" % (self.API, self.sid, q, i + 1), json={"values": rows[i:i + 400]})
+        try:
+            self._call("POST", "%s/%s:batchUpdate" % (self.API, self.sid), json={"requests": [
+                {"updateSheetProperties": {"properties": {"sheetId": sid, "gridProperties": {"frozenRowCount": header_rows, "frozenColumnCount": 3}}, "fields": "gridProperties(frozenRowCount,frozenColumnCount)"}},
+                {"repeatCell": {"range": {"sheetId": sid, "startRowIndex": 0, "endRowIndex": header_rows}, "cell": {"userEnteredFormat": {"textFormat": {"bold": True}, "backgroundColor": {"red": 0.85, "green": 0.93, "blue": 0.85}}}, "fields": "userEnteredFormat(textFormat,backgroundColor)"}}]})
+        except Exception:
+            pass   # looks only
     def update_row(self, t, r, row):
         self._call("PUT", "%s/%s/values/%s!A%d?valueInputOption=RAW" % (self.API, self.sid, t, r), json={"values": [[row.get(c, "") for c in SCHEMA[t]]]})
 
@@ -119,6 +139,7 @@ class Store:
     TTL = 10
     def __init__(self, backend):
         self.b = backend; self.lock = threading.RLock(); self.snap = None; self.t = 0
+        self.sync_fn = None; self.writes = 0; self.synced = 0; self.last_sync = 0.0; self.busy = False; self.timer = False; self.sync_error = ""
         backend.ensure()
     def data(self):
         with self.lock:
@@ -131,7 +152,38 @@ class Store:
     def append(self, t, rows):
         with self.lock:
             self.b.append(t, rows); self.snap = None
+        self._dirty(t)
     def update(self, t, r, row):
         with self.lock:
             clean = {k: v for k, v in row.items() if k != "_r"}
             self.b.update_row(t, r, clean); self.snap = None
+        self._dirty(t)
+
+    # ---- keep the Google Sheet "Register" tab up to date in the background (at most once every GAP seconds)
+    GAP = 40
+    def _dirty(self, table):
+        if table in ("Items", "Moves"):
+            self.writes += 1; self.kick()
+    def kick(self, force=False):
+        if not self.sync_fn: return
+        with self.lock:
+            if self.busy or (self.writes == self.synced and not force): return
+            wait = self.GAP - (time.time() - self.last_sync)
+            if wait > 0 and not force:
+                if not self.timer:
+                    self.timer = True; t = threading.Timer(wait + 1, self._timer); t.daemon = True; t.start()
+                return
+            self.busy = True; mark = self.writes
+        threading.Thread(target=self._work, args=(mark,), daemon=True).start()
+    def _timer(self):
+        self.timer = False; self.kick()
+    def _work(self, mark):
+        ok = False
+        try:
+            self.sync_fn(self); ok = True; self.sync_error = ""
+        except Exception as e:
+            self.sync_error = str(e)[:200]
+        finally:
+            with self.lock:
+                self.busy = False; self.last_sync = time.time()
+                if ok: self.synced = max(self.synced, mark)

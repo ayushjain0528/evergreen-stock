@@ -266,3 +266,34 @@ def seed_if_empty(store, sample=False):
         store.append("Moves", [_move(x["id"], x["sample_qty"], "good", "count", ref, "setup", note="SAMPLE count from Oct statement (trial only)")
                                for x in m if x.get("sample_qty") and x["active"]])
     return True
+
+
+# ---------- Google Sheet register (same layout as the Excel: Opening / In / Out / Closing per day) ----------
+def register(items_rows, moves_rows, upto=None):
+    """Returns (tab_name, rows) for the current month. Only 'good' stock is shown, like the Excel."""
+    import calendar
+    from datetime import date as _d, datetime as _dt
+    upto = upto or today(); y, m = int(upto[:4]), int(upto[5:7]); first = "%04d-%02d-01" % (y, m)
+    days = ["%04d-%02d-%02d" % (y, m, d) for d in range(1, int(upto[8:10]) + 1)]
+    items = items_df(items_rows, True); mv = moves_df(moves_rows); mv = mv[(~mv["void"]) & (mv["bucket"] == "good")]
+    before = mv[mv["date"] < first].groupby("item_id")["qty"].sum()
+    inn = mv[(mv["date"] >= first) & (mv["qty"] > 0)].groupby(["item_id", "date"])["qty"].sum()
+    out = mv[(mv["date"] >= first) & (mv["qty"] < 0)].groupby(["item_id", "date"])["qty"].sum()
+    h1 = ["", "", "", "", "", "", "", ""]; h2 = ["Category", "Brand", "Item", "Size / details", "Unit", "Price", "Current QTY", "Amount"]
+    for d in days:
+        lab = _dt.strptime(d, "%Y-%m-%d").strftime("%d %b %Y")
+        h1 += [lab, "", "", ""]; h2 += ["Opening", "In", "Out", "Closing"]
+    rows = [h1, h2]
+    for _, it in items.iterrows():
+        bal = float(before.get(it["id"], 0.0)); line = [it["category"], it["brand"], it["item"], it["spec"], it["unit"], it["price"], 0, 0]; cells = []
+        for d in days:
+            i_ = float(inn.get((it["id"], d), 0.0)); o_ = -float(out.get((it["id"], d), 0.0)); cl = bal + i_ - o_
+            cells += [round(bal, 3), round(i_, 3), round(o_, 3), round(cl, 3)]; bal = cl
+        line[6] = round(bal, 3); line[7] = round(bal * it["price"], 2)
+        rows.append(line + cells)
+    return "Register %s" % first[:7], rows
+
+def sync_register(store):
+    tab, rows = register(store.rows("Items"), store.rows("Moves"))
+    store.b.replace_tab(tab, rows)
+    return tab
