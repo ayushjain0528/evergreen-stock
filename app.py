@@ -203,11 +203,9 @@ def screen_stock():
     st.caption("%d items shown. Other places stock can sit: B-grade %s · To recycle %s · Scrap %s" % (len(out), L.fmt(tab["bgrade"].sum()), L.fmt(tab["recycle"].sum()), L.fmt(tab["scrap"].sum())))
 
 
-def screen_addstock():
-    items, _, tab = load()
-    st.subheader("Add stock")
-    st.caption("Choose from the lists. If something is not there, pick 'Other' and type it.")
-    ver = st.session_state.setdefault("as_ver", 0); k = lambda n: "%s_%d" % (n, ver)
+def entry_picker(pre, items, tab):
+    """Category > Brand > Item (each with 'Other'). Returns (item_row or None, new_item dict or None, unit text)."""
+    ver = st.session_state.setdefault(pre + "_ver", 0); k = lambda n: "%s_%s_%d" % (pre, n, ver)
     OTHER = "Other (type it)"
     cats = [c for c in L.categories(S.rows("Items"), S.rows("Lists")) if c in set(items["category"])]
     cat = st.selectbox("1. Category", cats + [OTHER], index=None, placeholder="Choose category", key=k("c"))
@@ -217,39 +215,72 @@ def screen_addstock():
         known = sorted(items[items["category"] == cat]["brand"].unique()) if cat in cats else sorted(items["brand"].unique())
         brand = st.selectbox("2. Brand", list(known) + [OTHER], index=None, placeholder="Choose brand", key=k("b"))
         if brand == OTHER: brand = st.text_input("Type the new brand", key=k("bt")).strip()
-    it = None; new_item = False; nm = sp = unit = ""
-    if cat and brand:
-        sub = items[(items["category"] == cat) & (items["brand"] == brand)]
-        labels = {}
-        for i in sub.index:
-            lab = sub.loc[i, "name"]
-            while lab in labels: lab += " ·"
-            labels[lab] = i
-        pick = st.selectbox("3. Item / size", list(labels) + [OTHER], index=None, placeholder="Choose item / size", key=k("i"))
-        if pick == OTHER:
-            new_item = True
-            c1, c2 = st.columns(2)
-            nm = c1.text_input("Item name (e.g. 16MM Round)", key=k("nm")).strip(); sp = c2.text_input("Size / details (e.g. 400mtr 40cm)", key=k("sp")).strip()
-            unit = st.selectbox("Unit", ["rolls", "pieces", "sets", "bags", "boxes", "kg", "nos", "mtr", OTHER], index=None, placeholder="Choose unit", key=k("u"))
-            if unit == OTHER: unit = st.text_input("Type the unit", key=k("ut")).strip()
-        elif pick:
-            it = sub.loc[labels[pick]]
-            have = float(tab.loc[tab["id"] == it["id"], "good"].iloc[0])
-            st.info("Unit: **%s**   ·   Now in stock: **%s**" % (it["unit"], L.fmt(have)))
-    qty = qty_box("4. Quantity to add", key=k("q"), unit=(it["unit"] if it is not None else unit or ""))
-    if st.button("Save", type="primary", key=k("s")):
-        iid = None
-        if new_item:
-            if not (cat and brand and nm and unit): st.error("Fill the item name and unit.")
-            elif not qty: st.error("Enter the quantity.")
-            elif run(L.add_item, cat, brand, nm, sp, unit, 0.0, 0.0):
-                row = [r for r in S.rows("Items") if r["category"] == cat and r["brand"] == brand and r["item"].lower() == nm.lower() and r["spec"].lower() == sp.lower()]
-                iid = row[-1]["id"] if row else None
-        elif it is not None: iid = it["id"]
-        else: st.error("Choose the category, brand and item first.")
-        if iid and run(L.add_stock, ME, iid, qty, today(), "", nonce("addstock"), ok="Added %s" % L.fmt(qty)):
-            burn("addstock"); st.session_state["as_ver"] = ver + 1; st.rerun()
+    if not (cat and brand): return None, None, ""
+    sub = items[(items["category"] == cat) & (items["brand"] == brand)]
+    labels = {}
+    for i in sub.index:
+        lab = sub.loc[i, "name"]
+        while lab in labels: lab += " ·"
+        labels[lab] = i
+    pick = st.selectbox("3. Item / size", list(labels) + [OTHER], index=None, placeholder="Choose item / size", key=k("i"))
+    if pick == OTHER:
+        c1, c2 = st.columns(2)
+        nm = c1.text_input("Item name (e.g. 16MM Round)", key=k("nm")).strip(); sp = c2.text_input("Size / details (e.g. 400mtr 40cm)", key=k("sp")).strip()
+        unit = st.selectbox("Unit", ["rolls", "pieces", "sets", "bags", "boxes", "kg", "nos", "mtr", OTHER], index=None, placeholder="Choose unit", key=k("u"))
+        if unit == OTHER: unit = st.text_input("Type the unit", key=k("ut")).strip()
+        return None, dict(cat=cat, brand=brand, nm=nm, sp=sp, unit=unit or ""), unit or ""
+    if pick:
+        it = sub.loc[labels[pick]]
+        st.info("Unit: **%s**   ·   Now in stock: **%s**" % (it["unit"], L.fmt(float(tab.loc[tab["id"] == it["id"], "good"].iloc[0]))))
+        return it, None, it["unit"]
+    return None, None, ""
+
+def resolve_item(it, new):
+    """Existing item id, or create the new item and return its id. Returns None (with a message) when something is missing."""
+    if it is not None: return it["id"]
+    if new is None: st.error("Choose the category, brand and item first."); return None
+    if not (new["nm"] and new["unit"]): st.error("Fill the item name and unit."); return None
+    if not run(L.add_item, new["cat"], new["brand"], new["nm"], new["sp"], new["unit"], 0.0, 0.0): return None
+    row = [r for r in S.rows("Items") if r["category"] == new["cat"] and r["brand"] == new["brand"] and r["item"].lower() == new["nm"].lower() and r["spec"].lower() == new["sp"].lower()]
+    return row[-1]["id"] if row else None
+
+def reset_picker(pre): st.session_state[pre + "_ver"] = st.session_state.get(pre + "_ver", 0) + 1
+
+
+def screen_addstock():
+    items, _, tab = load()
+    st.subheader("Add stock")
+    st.caption("Use this to put in the stock you have now. It is added to what is already there. If something is not in a list, pick 'Other' and type it.")
+    it, new, unit = entry_picker("as", items, tab)
+    ver = st.session_state["as_ver"]
+    qty = qty_box("4. Quantity to add", key="as_q_%d" % ver, unit=unit)
+    if st.button("Save", type="primary", key="as_s_%d" % ver):
+        if not qty: st.error("Enter the quantity.")
+        else:
+            iid = resolve_item(it, new)
+            if iid and run(L.add_stock, ME, iid, qty, today(), "", nonce("as"), ok="Added %s" % L.fmt(qty)): burn("as"); reset_picker("as"); st.rerun()
     recent(["opening"])
+
+
+def screen_inward():
+    items, _, tab = load()
+    st.subheader("Inward (purchased material / fittings)")
+    st.caption("Record goods received from a supplier. Pick 'Other' in any list to add something new.")
+    it, new, unit = entry_picker("iw", items, tab)
+    ver = st.session_state["iw_ver"]
+    qty = qty_box("4. Quantity received", key="iw_q_%d" % ver, unit=unit)
+    suppliers = sorted({m["party"] for m in S.rows("Moves") if m["type"] == "inward" and m["party"]})
+    c1, c2 = st.columns(2)
+    with c1: sup = combo("Supplier", suppliers, "iw_s_%d" % ver, "Choose or type")
+    bill = c2.text_input("Bill / challan no. (optional)", key="iw_bill_%d" % ver)
+    d = st.date_input("Date received", value=date.today(), key="iw_d_%d" % ver)
+    note = st.text_input("Note (optional)", key="iw_n_%d" % ver)
+    if st.button("Save inward", type="primary", key="iw_save_%d" % ver):
+        if not qty: st.error("Enter the quantity.")
+        else:
+            iid = resolve_item(it, new)
+            if iid and run(L.add_inward, ME, iid, qty, str(d), sup or "", bill, note, nonce("iw"), ok="Inward saved: %s" % L.fmt(qty)): burn("iw"); reset_picker("iw"); st.rerun()
+    recent(["inward"])
 
 
 def screen_production():
@@ -411,7 +442,7 @@ def screen_reports():
     st.subheader("Reports")
     c1, c2 = st.columns(2); d1 = c1.date_input("From", value=date.today() - timedelta(days=6)); d2 = c2.date_input("To", value=date.today())
     live = moves[~moves["void"] & (moves["date"] >= str(d1)) & (moves["date"] <= str(d2))].merge(items[["id", "name", "brand", "category", "unit", "price"]], left_on="item_id", right_on="id", how="left")
-    t1, t2, t3, t4 = st.tabs(["Production", "Dispatch", "Low stock", "Value" if IS_ADMIN else "Stock"])
+    t1, t2, t3, t4, t5 = st.tabs(["Production", "Dispatch", "Low stock", "Value" if IS_ADMIN else "Stock", "Inward"])
     with t1:
         p = live[live["type"] == "production"]
         if p.empty: st.caption("No production in these dates.")
@@ -430,6 +461,12 @@ def screen_reports():
         low = tab[(tab["min_level"] > 0) & (tab["good"] < tab["min_level"])][["category", "brand", "name", "unit", "good", "min_level"]]
         if low.empty: st.caption("Nothing below its minimum (set minimums in Admin → Items).")
         else: st.dataframe(low.rename(columns={"good": "In stock", "min_level": "Minimum"}), hide_index=True, **WIDE)
+    with t5:
+        p = live[live["type"] == "inward"]
+        if p.empty: st.caption("No inward entries in these dates.")
+        else:
+            full = p[["date", "party", "category", "brand", "name", "unit", "qty", "note", "user"]].rename(columns={"party": "supplier", "qty": "received"})
+            st.dataframe(full, hide_index=True, **WIDE); st.download_button("Download inward list (CSV)", full.to_csv(index=False), "inward.csv", "text/csv")
     with t4:
         if IS_ADMIN:
             g = tab.groupby("category", as_index=False).agg(Value=("value", "sum")); g["Value"] = g["Value"].round(0)
@@ -513,7 +550,7 @@ def screen_admin():
         st.download_button("Download a full backup (zip)", buf.getvalue(), "evergreen-backup-%s.zip" % today(), "application/zip")
 
 
-SCREENS = {"Stock": screen_stock, "Add Stock": screen_addstock, "Production": screen_production, "Dispatch": screen_dispatch, "Orders": screen_orders, "Returns": screen_returns,
+SCREENS = {"Stock": screen_stock, "Inward": screen_inward, "Add Stock": screen_addstock, "Production": screen_production, "Dispatch": screen_dispatch, "Orders": screen_orders, "Returns": screen_returns,
            "Raw & Waste": screen_raw, "Count": screen_count, "Reports": screen_reports, "Admin": screen_admin}
 
 st.markdown("### 🌿 Evergreen Stock" + ("" if LIVE else "  ·  TRIAL"))

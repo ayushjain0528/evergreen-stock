@@ -8,10 +8,10 @@ BUCKETS = ["good", "hold", "bgrade", "recycle", "scrap"]
 BUCKET_NAME = {"good": "Good stock", "hold": "On hold (returns)", "bgrade": "B-grade", "recycle": "To recycle", "scrap": "Scrap"}
 ROLES = ["admin", "supervisor", "operator", "loader", "sales"]
 NAV = {
-    "admin":      ["Stock", "Add Stock", "Production", "Dispatch", "Orders", "Returns", "Raw & Waste", "Count", "Reports", "Admin"],
-    "supervisor": ["Stock", "Add Stock", "Production", "Dispatch", "Orders", "Returns", "Raw & Waste", "Count", "Reports"],
-    "operator":   ["Stock", "Add Stock", "Production", "Raw & Waste", "Count"],
-    "loader":     ["Stock", "Dispatch", "Returns"],
+    "admin":      ["Stock", "Inward", "Add Stock", "Production", "Dispatch", "Orders", "Returns", "Raw & Waste", "Count", "Reports", "Admin"],
+    "supervisor": ["Stock", "Inward", "Add Stock", "Production", "Dispatch", "Orders", "Returns", "Raw & Waste", "Count", "Reports"],
+    "operator":   ["Stock", "Inward", "Add Stock", "Production", "Raw & Waste", "Count"],
+    "loader":     ["Stock", "Inward", "Dispatch", "Returns"],
     "sales":      ["Stock", "Orders", "Returns"],
 }
 SESSION_DAYS = 365
@@ -109,6 +109,13 @@ def add_stock(store, user, item_id, qty, date, note="", ref=""):
     q = check_qty(qty); ref = ref or new_id()
     if already(store, ref): return
     store.append("Moves", [_move(item_id, q, "good", "opening", ref, user, date, note=note or "Stock added")])
+
+def add_inward(store, user, item_id, qty, date, supplier="", bill="", note="", ref=""):
+    """Purchased material / fittings received."""
+    q = check_qty(qty); ref = ref or new_id()
+    if already(store, ref): return
+    n = " · ".join(x for x in [("Bill " + bill.strip()) if bill.strip() else "", note.strip()] if x)
+    store.append("Moves", [_move(item_id, q, "good", "inward", ref, user, date, party=supplier.strip(), note=n)])
 
 def reset_all_stock(store, user):
     """Sets every item's good stock to zero by adding offsetting entries (nothing is deleted)."""
