@@ -18,7 +18,7 @@ div[role="radiogroup"]{gap:.15rem .8rem}div[role="radiogroup"] label p{font-size
 
 
 # ---------------------------------------------------------------- storage
-APP_VERSION = "2026-10-28-b"   # change this on every release so a fresh connection is built
+APP_VERSION = "2026-10-28-c"   # change this on every release so a fresh connection is built
 
 
 @st.cache_resource
@@ -91,7 +91,9 @@ def token_in():
     return None
 
 def current_user():
-    u = L.user_from_token(S, token_in())
+    tok = token_in(); u = L.user_from_token(S, tok)
+    if u and u["role"] == "admin" and tok != (st.session_state.get("tok") or st.context.cookies.get("sb_s")):
+        return None          # an admin login is never accepted from a link, so a copied link cannot open the admin account
     return u
 
 def login_screen():
@@ -113,7 +115,7 @@ def login_screen():
                 tok, u = L.login(S, nm, pin)
             except L.Problem as e:
                 st.error(str(e)); return
-            st.session_state["tok"] = tok; st.query_params["s"] = tok; set_cookie(tok); st.rerun()
+            st.session_state["tok"] = tok; (None if u["role"] == "admin" else st.query_params.__setitem__("s", tok)); set_cookie(tok); st.rerun()
     st.caption("You stay signed in on this phone. You will not need to type the PIN again.")
 
 
@@ -121,7 +123,9 @@ user = current_user()
 if not user:
     login_screen(); st.stop()
 st.session_state["tok"] = token_in()
-if st.query_params.get("s") != st.session_state["tok"]: st.query_params["s"] = st.session_state["tok"]
+if user["role"] == "admin":
+    if "s" in st.query_params: del st.query_params["s"]
+elif st.query_params.get("s") != st.session_state["tok"]: st.query_params["s"] = st.session_state["tok"]
 if st.context.cookies.get("sb_s") != st.session_state["tok"]: set_cookie(st.session_state["tok"])
 ME, ROLE = user["name"], user["role"]
 S.maybe_backup(L.backup_now)
