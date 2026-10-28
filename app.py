@@ -265,21 +265,15 @@ def screen_addstock():
 def screen_inward():
     items, _, tab = load()
     st.subheader("Inward (purchased material / fittings)")
-    st.caption("Record goods received from a supplier. Pick 'Other' in any list to add something new.")
+    st.caption("Goods received. Pick 'Other' in any list to add something new.")
     it, new, unit = entry_picker("iw", items, tab)
     ver = st.session_state["iw_ver"]
     qty = qty_box("4. Quantity received", key="iw_q_%d" % ver, unit=unit)
-    suppliers = sorted({m["party"] for m in S.rows("Moves") if m["type"] == "inward" and m["party"]})
-    c1, c2 = st.columns(2)
-    with c1: sup = combo("Supplier", suppliers, "iw_s_%d" % ver, "Choose or type")
-    bill = c2.text_input("Bill / challan no. (optional)", key="iw_bill_%d" % ver)
-    d = st.date_input("Date received", value=date.today(), key="iw_d_%d" % ver)
-    note = st.text_input("Note (optional)", key="iw_n_%d" % ver)
     if st.button("Save inward", type="primary", key="iw_save_%d" % ver):
         if not qty: st.error("Enter the quantity.")
         else:
             iid = resolve_item(it, new)
-            if iid and run(L.add_inward, ME, iid, qty, str(d), sup or "", bill, note, nonce("iw"), ok="Inward saved: %s" % L.fmt(qty)): burn("iw"); reset_picker("iw"); st.rerun()
+            if iid and run(L.add_inward, ME, iid, qty, today(), "", "", "", nonce("iw"), ok="Inward saved: %s" % L.fmt(qty)): burn("iw"); reset_picker("iw"); st.rerun()
     recent(["inward"])
 
 
@@ -465,7 +459,7 @@ def screen_reports():
         p = live[live["type"] == "inward"]
         if p.empty: st.caption("No inward entries in these dates.")
         else:
-            full = p[["date", "party", "category", "brand", "name", "unit", "qty", "note", "user"]].rename(columns={"party": "supplier", "qty": "received"})
+            full = p[["date", "category", "brand", "name", "unit", "qty", "user"]].rename(columns={"qty": "received"})
             st.dataframe(full, hide_index=True, **WIDE); st.download_button("Download inward list (CSV)", full.to_csv(index=False), "inward.csv", "text/csv")
     with t4:
         if IS_ADMIN:
