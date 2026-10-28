@@ -221,6 +221,22 @@ def screen_addstock():
             if it is None: st.error("Choose category, brand and item first.")
             elif run(L.add_stock, ME, it["id"], qty, today(), "", nonce("addstock"), ok="Added %s %s" % (L.fmt(qty), it["name"])): burn("addstock")
     recent(["opening"])
+    with st.expander("➕ Can't find it? Add a new category, brand or size"):
+        st.caption("Pick an existing category or brand from the list, or choose 'Type a new one' to make a new one. Price can be added later by the admin.")
+        allc = L.categories(S.rows("Items"), S.rows("Lists")); allb = sorted({r["brand"] for r in S.rows("Items") if r["brand"]})
+        nc = combo("Category", allc, "ni_c", "Choose or type"); nb = combo("Brand", allb, "ni_b", "Choose or type")
+        with st.form("newitem_staff", clear_on_submit=True):
+            nm = st.text_input("Item name (e.g. 16MM Round)"); sp = st.text_input("Size / details (e.g. 400mtr 40cm)")
+            c1, c2 = st.columns(2)
+            un = c1.selectbox("Unit", ["rolls", "pieces", "sets", "bags", "boxes", "kg", "nos", "mtr"])
+            oq = c2.number_input("Quantity you have now (optional)", min_value=0.0, value=None, step=1.0, format="%g", placeholder="0")
+            if st.form_submit_button("Create item"):
+                if not nc or not nb: st.error("Choose or type the category and the brand.")
+                elif run(L.add_item, nc, nb, nm, sp, un, 0.0, 0.0, ok="Item created"):
+                    if oq:
+                        new = [r for r in S.rows("Items") if r["item"].lower() == nm.strip().lower() and r["spec"].lower() == sp.strip().lower() and r["brand"].lower() == nb.strip().lower()]
+                        if new: run(L.add_stock, ME, new[-1]["id"], oq, today(), "", new_id())
+                    st.rerun()
 
 
 def screen_production():
