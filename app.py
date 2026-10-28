@@ -18,8 +18,11 @@ div[role="radiogroup"]{gap:.15rem .8rem}div[role="radiogroup"] label p{font-size
 
 
 # ---------------------------------------------------------------- storage
+APP_VERSION = "2026-10-28-b"   # change this on every release so a fresh connection is built
+
+
 @st.cache_resource
-def get_store():
+def get_store(version=APP_VERSION):
     try:
         have = any(os.path.exists(os.path.join(d, "secrets.toml")) for d in (os.path.join(os.path.dirname(__file__), ".streamlit"), os.path.expanduser("~/.streamlit")))
         sec = st.secrets if have else {}
