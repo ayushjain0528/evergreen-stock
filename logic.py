@@ -4,7 +4,7 @@ import pandas as pd
 from store import SCHEMA, new_id, stamp, today, hash_pin, check_hash, token_hash, new_token, now
 from datetime import timedelta
 
-LOGIC_VERSION = "2026-10-29-d"
+LOGIC_VERSION = "2026-10-29-e"
 BUCKETS = ["good", "hold", "bgrade", "recycle", "scrap"]
 BUCKET_NAME = {"good": "Good stock", "hold": "On hold (returns)", "bgrade": "B-grade", "recycle": "To recycle", "scrap": "Scrap"}
 ROLES = ["admin", "supervisor", "operator", "loader", "sales"]
@@ -121,7 +121,7 @@ def add_inward(store, user, item_id, qty, date, supplier="", bill="", note="", r
 
 def import_opening(store, user, rows, date):
     """rows: dicts with id (optional), category, brand, item, spec, unit, qty, note. Adds opening stock; makes missing items; safe to run twice."""
-    made = added = 0
+    made = added = 0; seen = {}
     for r in rows:
         q = f(r.get("qty"), 0)
         if q <= 0: continue
@@ -138,7 +138,8 @@ def import_opening(store, user, rows, date):
         if str(it["active"]) not in ("1", "True", "true", "1.0"): new["active"] = 1
         if unit and unit != it["unit"]: new["unit"] = unit
         if new != it: store.update("Items", it["_r"], new)
-        ref = "open1-" + it["id"]
+        seen[it["id"]] = seen.get(it["id"], 0) + 1       # the same item twice in one file adds both lines
+        ref = "open1-%s-%d" % (it["id"], seen[it["id"]])
         if already(store, ref): continue
         store.append("Moves", [_move(it["id"], q, "good", "opening", ref, user, date, note=(str(r.get("note", "")).strip() or "Opening stock"))]); added += 1
     return made, added
