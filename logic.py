@@ -4,7 +4,7 @@ import pandas as pd
 from store import SCHEMA, new_id, stamp, today, hash_pin, check_hash, token_hash, new_token, now
 from datetime import timedelta
 
-LOGIC_VERSION = "2026-10-29-b"
+LOGIC_VERSION = "2026-10-29-c"
 BUCKETS = ["good", "hold", "bgrade", "recycle", "scrap"]
 BUCKET_NAME = {"good": "Good stock", "hold": "On hold (returns)", "bgrade": "B-grade", "recycle": "To recycle", "scrap": "Scrap"}
 ROLES = ["admin", "supervisor", "operator", "loader", "sales"]
@@ -119,6 +119,30 @@ def add_inward(store, user, item_id, qty, date, supplier="", bill="", note="", r
     n = " · ".join(x for x in [("Bill " + bill.strip()) if bill.strip() else "", note.strip()] if x)
     store.append("Moves", [_move(item_id, q, "good", "inward", ref, user, date, party=supplier.strip(), note=n)])
 
+def import_opening(store, user, rows, date):
+    """rows: dicts with id (optional), category, brand, item, spec, unit, qty, note. Adds opening stock; makes missing items; safe to run twice."""
+    made = added = 0
+    for r in rows:
+        q = f(r.get("qty"), 0)
+        if q <= 0: continue
+        its = store.rows("Items"); it = None; rid = str(r.get("id", "") or "").strip()
+        if rid: it = next((x for x in its if x["id"] == rid), None)
+        if it is None:
+            it = next((x for x in its if x["category"].lower() == str(r["category"]).strip().lower() and x["brand"].lower() == str(r["brand"]).strip().lower()
+                       and x["item"].lower() == str(r["item"]).strip().lower() and x["spec"].lower() == str(r["spec"]).strip().lower()), None)
+        if it is None:
+            add_item(store, r["category"], r["brand"], r["item"], r["spec"], r.get("unit") or "rolls"); made += 1
+            it = next(x for x in store.rows("Items") if x["category"].lower() == str(r["category"]).strip().lower() and x["brand"].lower() == str(r["brand"]).strip().lower()
+                      and x["item"].lower() == str(r["item"]).strip().lower() and x["spec"].lower() == str(r["spec"]).strip().lower())
+        new = dict(it); unit = str(r.get("unit") or "").strip()
+        if str(it["active"]) not in ("1", "True", "true", "1.0"): new["active"] = 1
+        if unit and unit != it["unit"]: new["unit"] = unit
+        if new != it: store.update("Items", it["_r"], new)
+        ref = "open1-" + it["id"]
+        if already(store, ref): continue
+        store.append("Moves", [_move(it["id"], q, "good", "opening", ref, user, date, note=(str(r.get("note", "")).strip() or "Opening stock"))]); added += 1
+    return made, added
+
 def reset_all_stock(store, user):
     """Sets every item's good stock to zero by adding offsetting entries (nothing is deleted)."""
     t = stock_table(items_df(store.rows("Items"), False), moves_df(store.rows("Moves")))
@@ -218,13 +242,13 @@ def to_produce(store):
     return pd.DataFrame(rows, columns=["id", "item", "brand", "unit", "ordered", "in_stock", "to_make"]).sort_values("to_make", ascending=False)
 
 # ---------- items / lists / users ----------
-def add_item(store, category, brand, item, spec, unit, price=0.0, min_level=0.0, subcategory=""):
+def add_item(store, category, brand, item, spec, unit, price=0.0, min_level=0.0):
     if not category.strip() or not item.strip(): raise Problem("Category and item name are needed.")
     dup = [r for r in store.rows("Items") if r["category"].lower() == category.strip().lower() and r["brand"].lower() == brand.strip().lower()
-           and r["item"].lower() == item.strip().lower() and r["spec"].lower() == spec.strip().lower() and r.get("subcategory", "").lower() == subcategory.strip().lower()]
+           and r["item"].lower() == item.strip().lower() and r["spec"].lower() == spec.strip().lower()]
     if dup: raise Problem("This item already exists.")
     store.append("Items", [dict(id="I" + new_id()[:6], category=category.strip(), brand=brand.strip(), item=item.strip(), spec=spec.strip(), unit=unit.strip() or "nos",
-                                kind="raw" if category.strip().lower().startswith("raw") else "finished", price=price, min_level=min_level, std_weight=0, active=1, subcategory=subcategory.strip())])
+                                kind="raw" if category.strip().lower().startswith("raw") else "finished", price=price, min_level=min_level, std_weight=0, active=1, subcategory="")])
 
 def add_list(store, kind, name):
     name = name.strip()
@@ -315,17 +339,17 @@ def register(items_rows, moves_rows, upto=None):
     before = mv[mv["date"] < first].groupby("item_id")["qty"].sum()
     inn = mv[(mv["date"] >= first) & (mv["qty"] > 0)].groupby(["item_id", "date"])["qty"].sum()
     out = mv[(mv["date"] >= first) & (mv["qty"] < 0)].groupby(["item_id", "date"])["qty"].sum()
-    h1 = [""] * 9; h2 = ["Category", "Brand", "Sub category", "Item", "Size / details", "Unit", "Price", "Current QTY", "Amount"]
+    h1 = [""] * 8; h2 = ["Category", "Brand", "Item", "Size / details", "Unit", "Price", "Current QTY", "Amount"]
     for d in days:
         lab = _dt.strptime(d, "%Y-%m-%d").strftime("%d %b %Y")
         h1 += [lab, "", "", ""]; h2 += ["Opening", "In", "Out", "Closing"]
     rows = [h1, h2]
     for _, it in items.iterrows():
-        bal = float(before.get(it["id"], 0.0)); line = [it["category"], it["brand"], it["subcategory"], it["item"], it["spec"], it["unit"], it["price"], 0, 0]; cells = []
+        bal = float(before.get(it["id"], 0.0)); line = [it["category"], it["brand"], it["item"], it["spec"], it["unit"], it["price"], 0, 0]; cells = []
         for d in days:
             i_ = float(inn.get((it["id"], d), 0.0)); o_ = -float(out.get((it["id"], d), 0.0)); cl = bal + i_ - o_
             cells += [round(bal, 3), round(i_, 3), round(o_, 3), round(cl, 3)]; bal = cl
-        line[7] = round(bal, 3); line[8] = round(bal * it["price"], 2)
+        line[6] = round(bal, 3); line[7] = round(bal * it["price"], 2)
         rows.append(line + cells)
     return "Register %s" % first[:7], rows
 

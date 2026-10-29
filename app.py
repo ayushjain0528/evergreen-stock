@@ -8,7 +8,7 @@ import streamlit.components.v1 as components
 import importlib
 import logic as L
 import store as _store
-RELEASE = "2026-10-29-b"        # change on every release; it makes the app reload its own parts after an update
+RELEASE = "2026-10-29-c"        # change on every release; it makes the app reload its own parts after an update
 if getattr(L, "LOGIC_VERSION", None) != RELEASE:
     importlib.reload(_store); importlib.reload(L)
 from store import Store, LocalBackend, SheetsBackend, today, new_id, SCHEMA
@@ -194,7 +194,7 @@ def screen_stock():
     v = tab.copy()
     if cat != "All categories": v = v[v["category"] == cat]
     if q.strip():
-        for w in q.lower().split(): v = v[(v["brand"] + " " + v["subcategory"] + " " + v["name"] + " " + v["category"]).str.lower().str.contains(w, regex=False)]
+        for w in q.lower().split(): v = v[(v["brand"] + " " + v["name"] + " " + v["category"]).str.lower().str.contains(w, regex=False)]
     if only: v = v[v["good"] > 0]
     m1, m2, m3 = st.columns(3)
     m1.metric("Items in stock", int((tab["good"] > 0).sum()))
@@ -209,8 +209,8 @@ def screen_stock():
     with st.expander("Today's movement (%d items)" % len(tm), expanded=not tm.empty):
         if tm.empty: st.caption("Nothing recorded today yet.")
         else: st.dataframe(tm, hide_index=True, **WIDE, column_config={"In": st.column_config.NumberColumn(format="%g"), "Out": st.column_config.NumberColumn(format="%g")})
-    cols = ["category", "brand", "subcategory", "name", "unit", "good", "hold"] + (["price", "value"] if IS_ADMIN else [])
-    out = v[cols].rename(columns={"category": "Category", "brand": "Brand", "subcategory": "Sub category", "name": "Item", "unit": "Unit", "good": "In stock", "hold": "On hold", "price": "Price", "value": "Value"})
+    cols = ["category", "brand", "name", "unit", "good", "hold"] + (["price", "value"] if IS_ADMIN else [])
+    out = v[cols].rename(columns={"category": "Category", "brand": "Brand", "name": "Item", "unit": "Unit", "good": "In stock", "hold": "On hold", "price": "Price", "value": "Value"})
     cfg = {"In stock": st.column_config.NumberColumn(format="%g"), "On hold": st.column_config.NumberColumn(format="%g")}
     if IS_ADMIN: cfg.update({"Price": st.column_config.NumberColumn(format="₹%g"), "Value": st.column_config.NumberColumn(format="₹%d")})
     st.dataframe(out, hide_index=True, **WIDE, column_config=cfg, height=min(640, 38 + 35 * max(len(out), 2)))
@@ -233,16 +233,9 @@ def entry_picker(pre, items, tab, kinds=None, allow_new=True):
         if brand == OTHER: brand = st.text_input("Type the new brand", key=ks("bt")).strip()
     if not (cat and brand): return None, None, ""
     sub = items[(items["category"] == cat) & (items["brand"] == brand)]
-    subs = sorted(s for s in sub["subcategory"].unique() if s)
-    subcat = ""
-    if subs or allow_new:
-        sc = st.selectbox("Sub category (optional)", subs + extra, index=None, placeholder="Choose sub category" if subs else "None yet - choose Other to add one", key=ks("s"))
-        if sc == OTHER: subcat = st.text_input("Type the new sub category", key=ks("st")).strip()
-        elif sc: subcat = sc
-        if subcat and subcat in subs: sub = sub[sub["subcategory"] == subcat]
     labels = {}
     for i in sub.index:
-        lab = sub.loc[i, "name"] if (subcat or not subs) else ((sub.loc[i, "subcategory"] + " - " if sub.loc[i, "subcategory"] else "") + sub.loc[i, "name"])
+        lab = sub.loc[i, "name"]
         while lab in labels: lab += " ·"
         labels[lab] = i
     pick = st.selectbox("Item / size", list(labels) + extra, index=None, placeholder="Choose item / size", key=k("i"))
@@ -251,7 +244,7 @@ def entry_picker(pre, items, tab, kinds=None, allow_new=True):
         nm = c1.text_input("Item name (e.g. 16MM Round)", key=k("nm")).strip(); sp = c2.text_input("Size / details (e.g. 400mtr 40cm)", key=k("sp")).strip()
         unit = st.selectbox("Unit", ["rolls", "pieces", "sets", "bags", "boxes", "kg", "nos", "mtr", OTHER], index=None, placeholder="Choose unit", key=k("u"))
         if unit == OTHER: unit = st.text_input("Type the unit", key=k("ut")).strip()
-        return None, dict(cat=cat, brand=brand, nm=nm, sp=sp, unit=unit or "", sub=subcat), unit or ""
+        return None, dict(cat=cat, brand=brand, nm=nm, sp=sp, unit=unit or ""), unit or ""
     if pick:
         it = sub.loc[labels[pick]]
         st.info("Unit: **%s**   ·   Now in stock: **%s**" % (it["unit"], L.fmt(float(tab.loc[tab["id"] == it["id"], "good"].iloc[0]))))
@@ -263,8 +256,8 @@ def resolve_item(it, new):
     if it is not None: return it["id"]
     if new is None: st.error("Choose the category, brand and item first."); return None
     if not (new["nm"] and new["unit"]): st.error("Fill the item name and unit."); return None
-    if not run(L.add_item, new["cat"], new["brand"], new["nm"], new["sp"], new["unit"], 0.0, 0.0, new.get("sub", "")): return None
-    row = [r for r in S.rows("Items") if r["category"] == new["cat"] and r["brand"] == new["brand"] and r["item"].lower() == new["nm"].lower() and r["spec"].lower() == new["sp"].lower() and r.get("subcategory", "").lower() == new.get("sub", "").lower()]
+    if not run(L.add_item, new["cat"], new["brand"], new["nm"], new["sp"], new["unit"], 0.0, 0.0): return None
+    row = [r for r in S.rows("Items") if r["category"] == new["cat"] and r["brand"] == new["brand"] and r["item"].lower() == new["nm"].lower() and r["spec"].lower() == new["sp"].lower()]
     return row[-1]["id"] if row else None
 
 def reset_picker(pre): st.session_state[pre + "_ver"] = st.session_state.get(pre + "_ver", 0) + 1
@@ -492,29 +485,28 @@ def screen_reports():
 
 def screen_admin():
     st.subheader("Admin")
-    t1, t2, t3, t4, t5 = st.tabs(["Prices & items", "People", "Lists", "History", "Backup"])
+    t1, t2, t3, t4, t5, t6 = st.tabs(["Prices & items", "People", "Lists", "History", "Backup", "Opening stock file"])
     with t1:
         items = L.items_df(S.rows("Items"), False)
-        st.caption("Edit price, minimum level or sub category and press Save. To put several items in a sub category, type it in each row. Untick 'Active' to hide an item.")
+        st.caption("Edit price or minimum level and press Save. Untick 'Active' to hide an item.")
         cats = ["All"] + L.categories(S.rows("Items"), S.rows("Lists")); cat = st.selectbox("Category", cats, key="adm_c")
         v = items if cat == "All" else items[items["category"] == cat]
-        ed = st.data_editor(v[["_r", "brand", "subcategory", "name", "unit", "price", "min_level", "active"]].rename(columns={"name": "Item"}), hide_index=True, **WIDE,
-                            disabled=["_r", "brand", "Item", "unit"], column_order=["brand", "subcategory", "Item", "unit", "price", "min_level", "active"], key="adm_ed_" + cat,
-                            column_config={"subcategory": st.column_config.TextColumn("Sub category"), "price": st.column_config.NumberColumn("Price ₹", min_value=0, format="%g"), "min_level": st.column_config.NumberColumn("Minimum", min_value=0, format="%g")})
+        ed = st.data_editor(v[["_r", "brand", "name", "unit", "price", "min_level", "active"]].rename(columns={"name": "Item"}), hide_index=True, **WIDE,
+                            disabled=["_r", "brand", "Item", "unit"], column_order=["brand", "Item", "unit", "price", "min_level", "active"], key="adm_ed_" + cat,
+                            column_config={"price": st.column_config.NumberColumn("Price ₹", min_value=0, format="%g"), "min_level": st.column_config.NumberColumn("Minimum", min_value=0, format="%g")})
         if st.button("Save changes", type="primary"):
             raw = {r["_r"]: r for r in S.rows("Items")}; n = 0
             for _, r in ed.iterrows():
                 o = raw[int(r["_r"])]; new = dict(o); new["price"] = L.f(r["price"]); new["min_level"] = L.f(r["min_level"]); new["active"] = 1 if r["active"] else 0
-                new["subcategory"] = ("" if pd.isna(r["subcategory"]) else str(r["subcategory"])).strip()
-                if (L.f(o["price"]), L.f(o["min_level"]), str(o["active"]) in ("1", "True", "true"), o.get("subcategory", "").strip()) != (new["price"], new["min_level"], bool(r["active"]), new["subcategory"]): S.update("Items", int(r["_r"]), new); n += 1
+                if (L.f(o["price"]), L.f(o["min_level"]), str(o["active"]) in ("1", "True", "true")) != (new["price"], new["min_level"], bool(r["active"])): S.update("Items", int(r["_r"]), new); n += 1
             st.toast("Saved %d changes" % n, icon="✅")
         st.divider(); st.markdown("**Add a new item**")
         allc = L.categories(S.rows("Items"), S.rows("Lists"))
         with st.form("newitem", clear_on_submit=True):
             c1, c2 = st.columns(2); nc = c1.selectbox("Category", allc); br = c2.text_input("Brand", value="Evergreen")
-            sc = st.text_input("Sub category (optional)"); nm = st.text_input("Item name (e.g. 16 Round)"); sp = st.text_input("Size / details (e.g. 400mtr 40cm)")
+            nm = st.text_input("Item name (e.g. 16 Round)"); sp = st.text_input("Size / details (e.g. 400mtr 40cm)")
             c3, c4, c5 = st.columns(3); un = c3.selectbox("Unit", ["rolls", "pieces", "sets", "bags", "boxes", "kg", "nos"]); pr = c4.number_input("Price ₹", min_value=0.0, value=0.0); mn = c5.number_input("Minimum", min_value=0.0, value=0.0)
-            if st.form_submit_button("Add item"): run(L.add_item, nc, br, nm, sp, un, pr, mn, sc, ok="Item added")
+            if st.form_submit_button("Add item"): run(L.add_item, nc, br, nm, sp, un, pr, mn, ok="Item added")
     with t2:
         us = L.users(S)
         st.dataframe(pd.DataFrame(us)[["name", "role", "active"]] if us else pd.DataFrame(), hide_index=True, **WIDE)
@@ -567,6 +559,24 @@ def screen_admin():
             for t in ("Items", "Moves", "Orders", "Lists"):
                 z.writestr(t + ".csv", pd.DataFrame(S.rows(t)).drop(columns=["_r"], errors="ignore").to_csv(index=False))
         st.download_button("Download a full backup (zip)", buf.getvalue(), "evergreen-backup-%s.zip" % today(), "application/zip")
+    with t6:
+        st.write("Load your counted opening stock from a file. Items that are missing are created. Loading the same file twice does not double the stock.")
+        up = st.file_uploader("Opening stock file (CSV)", type=["csv"], key="open_up")
+        if up is not None:
+            try: df = pd.read_csv(up, dtype=str).fillna("")
+            except Exception: df = None; st.error("Could not read that file.")
+            if df is not None:
+                need = {"id", "category", "brand", "item", "spec", "unit", "qty"}
+                if not need.issubset(df.columns): st.error("The file must have these columns: " + ", ".join(sorted(need)))
+                else:
+                    st.dataframe(df[["category", "brand", "item", "spec", "unit", "qty"]], hide_index=True, **WIDE)
+                    st.caption("%d lines. Check them, then press the button." % len(df))
+                    if st.button("Load this opening stock", type="primary"):
+                        try:
+                            made, added = L.import_opening(S, ME, df.to_dict("records"), today())
+                            st.success("Done. %d lines entered, %d new items created." % (added, made))
+                        except L.Problem as e: st.error(str(e))
+                        except Exception as e: st.error("Could not load. (%s)" % str(e)[:160])
 
 
 SCREENS = {"Stock": screen_stock, "Inward": screen_inward, "Add Stock": screen_addstock, "Production": screen_production, "Dispatch": screen_dispatch, "Orders": screen_orders, "Returns": screen_returns,
