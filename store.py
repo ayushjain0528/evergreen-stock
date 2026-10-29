@@ -5,7 +5,7 @@ from datetime import timezone, timedelta
 
 IST = timezone(timedelta(hours=5, minutes=30))
 SCHEMA = {
-    "Items":    ["id", "category", "brand", "item", "spec", "unit", "kind", "price", "min_level", "std_weight", "active"],
+    "Items":    ["id", "category", "brand", "item", "spec", "unit", "kind", "price", "min_level", "std_weight", "active", "subcategory"],
     "Moves":    ["id", "ts", "date", "item_id", "qty", "bucket", "type", "ref", "party", "vehicle", "machine", "shift", "note", "user", "void"],
     "Orders":   ["id", "ts", "date", "due", "party", "item_id", "qty", "status", "note", "user"],
     "Lists":    ["kind", "name", "active"],
@@ -33,6 +33,12 @@ class LocalBackend:
         for t, cols in SCHEMA.items():
             if not os.path.exists(self._f(t)):
                 with open(self._f(t), "w", newline="", encoding="utf-8") as f: csv.writer(f).writerow(cols)
+            else:                       # a newer version added columns: pad the old file
+                with open(self._f(t), newline="", encoding="utf-8") as f: lines = list(csv.reader(f))
+                if lines and lines[0] != cols and lines[0] == cols[:len(lines[0])]:
+                    pad = len(cols) - len(lines[0]); lines[0] = cols
+                    lines = [lines[0]] + [r + [""] * pad for r in lines[1:]]
+                    with open(self._f(t), "w", newline="", encoding="utf-8") as f: csv.writer(f).writerows(lines)
     def read_all(self):
         out = {}
         with self.lock:
@@ -94,7 +100,8 @@ class SheetsBackend:
                        json={"requests": [{"addSheet": {"properties": {"title": t}}} for t in need]})
         for t in SCHEMA:
             r = self._call("GET", "%s/%s/values/%s!1:1" % (self.API, self.sid, t))
-            if not r.get("values"):
+            have_h = (r.get("values") or [[]])[0]
+            if not have_h or (have_h != SCHEMA[t] and have_h == SCHEMA[t][:len(have_h)]):     # new sheet, or a newer version added columns
                 self._call("PUT", "%s/%s/values/%s!A1?valueInputOption=RAW" % (self.API, self.sid, t), json={"values": [SCHEMA[t]]})
     def read_all(self):
         q = "&".join("ranges=%s!A:Z" % t for t in SCHEMA)
@@ -117,7 +124,7 @@ class SheetsBackend:
         old = sorted((x["properties"]["title"], x["properties"]["sheetId"]) for x in meta["sheets"] if x["properties"]["title"].startswith(prefix))
         if len(old) > keep:
             self._call("POST", "%s/%s:batchUpdate" % (self.API, self.sid), json={"requests": [{"deleteSheet": {"sheetId": sid}} for _, sid in old[:-keep]]})
-    def replace_tab(self, tab, rows, header_rows=2, fixed_cols=8):
+    def replace_tab(self, tab, rows, header_rows=2, fixed_cols=9):
         """Rewrite a human-readable report tab (created if missing). The app owns this tab; nobody types in it."""
         meta = self._call("GET", "%s/%s?fields=sheets.properties" % (self.API, self.sid))
         sid = next((x["properties"]["sheetId"] for x in meta["sheets"] if x["properties"]["title"] == tab), None)
