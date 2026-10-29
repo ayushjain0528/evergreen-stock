@@ -8,7 +8,7 @@ import streamlit.components.v1 as components
 import importlib
 import logic as L
 import store as _store
-RELEASE = "2026-10-29-c"        # change on every release; it makes the app reload its own parts after an update
+RELEASE = "2026-10-29-d"        # change on every release; it makes the app reload its own parts after an update
 if getattr(L, "LOGIC_VERSION", None) != RELEASE:
     importlib.reload(_store); importlib.reload(L)
 from store import Store, LocalBackend, SheetsBackend, today, new_id, SCHEMA
@@ -124,7 +124,15 @@ def login_screen():
     st.caption("You stay signed in on this phone. You will not need to type the PIN again.")
 
 
-user = current_user()
+try:
+    user = current_user()
+except RuntimeError as e:      # the Google Sheet could not be reached: say why in plain words instead of a red stack trace
+    st.markdown("### 🌿 Evergreen Stock")
+    msg = str(e)
+    st.error("The app could not reach the Google Sheet. " + ("Google said: " + msg[:260] if "Google Sheets" in msg else msg[:260]))
+    st.caption("Wait one minute and press the button. If it keeps happening, send this message to your helper.")
+    if st.button("Try again"): st.rerun()
+    st.stop()
 if not user:
     login_screen(); st.stop()
 st.session_state["tok"] = token_in()
