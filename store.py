@@ -11,7 +11,9 @@ SCHEMA = {
     "Lists":    ["kind", "name", "active"],
     "Users":    ["name", "role", "salt", "pin_hash", "active", "fails", "locked_until", "created"],
     "Sessions": ["token_hash", "user", "expires", "created"],
+    "Log":      ["ts", "date", "user", "role", "action", "screen", "detail", "result", "ms"],
 }
+READ = [t for t in SCHEMA if t != "Log"]      # the activity log is write-only for the app (it can grow large)
 
 def now(): return datetime.now(IST)
 def today(): return now().strftime("%Y-%m-%d")
@@ -42,7 +44,8 @@ class LocalBackend:
     def read_all(self):
         out = {}
         with self.lock:
-            for t, cols in SCHEMA.items():
+            for t in READ:
+                cols = SCHEMA[t]
                 with open(self._f(t), newline="", encoding="utf-8") as f:
                     rows = list(csv.DictReader(f))
                 for i, r in enumerate(rows): r["_r"] = i + 2
@@ -104,10 +107,10 @@ class SheetsBackend:
             if not have_h or (have_h != SCHEMA[t] and have_h == SCHEMA[t][:len(have_h)]):     # new sheet, or a newer version added columns
                 self._call("PUT", "%s/%s/values/%s!A1?valueInputOption=RAW" % (self.API, self.sid, t), json={"values": [SCHEMA[t]]})
     def read_all(self):
-        q = "&".join("ranges=%s!A:Z" % t for t in SCHEMA)
+        q = "&".join("ranges=%s!A:Z" % t for t in READ)
         r = self._call("GET", "%s/%s/values:batchGet?%s&valueRenderOption=UNFORMATTED_VALUE" % (self.API, self.sid, q))
         out = {}
-        for t, vr in zip(SCHEMA, r["valueRanges"]):
+        for t, vr in zip(READ, r["valueRanges"]):
             vals = vr.get("values", []); cols = SCHEMA[t]; rows = []
             for i, v in enumerate(vals[1:], start=2):
                 if not any(str(x).strip() for x in v): continue
@@ -156,6 +159,7 @@ class Store:
         self.b = backend; self.lock = threading.RLock(); self.snap = None; self.t = 0
         self.sync_fn = None; self.writes = 0; self.synced = 0; self.last_sync = 0.0; self.busy = False; self.timer = False; self.sync_error = ""
         self.bk_day = None; self.bk_busy = False; self.bk_error = ""; self.bk_next = 0.0
+        self.logq = []; self.log_timer = False; self.log_error = ""
         backend.ensure()
     def data(self):
         with self.lock:
@@ -174,6 +178,23 @@ class Store:
             clean = {k: v for k, v in row.items() if k != "_r"}
             self.b.update_row(t, r, clean); self.snap = None
         self._dirty(t)
+
+    # ---- activity log: every action is queued and written to the Log tab in small batches (never slows the screen)
+    def log(self, user="", role="", action="", screen="", detail="", result="ok", ms=""):
+        e = dict(ts=stamp(), date=today(), user=user, role=role, action=action, screen=screen, detail=str(detail)[:300], result=result, ms=ms)
+        with self.lock:
+            self.logq.append(e); self.logq = self.logq[-800:]
+            if not self.log_timer:
+                self.log_timer = True; t = threading.Timer(6, self._flush_log); t.daemon = True; t.start()
+    def _flush_log(self):
+        with self.lock:
+            batch, self.logq = self.logq, []; self.log_timer = False
+        if not batch: return
+        try:
+            self.b.append("Log", batch); self.log_error = ""
+        except Exception as ex:
+            self.log_error = str(ex)[:200]
+            with self.lock: self.logq = (batch + self.logq)[-800:]
 
     # ---- keep the Google Sheet "Register" tab up to date in the background (at most once every GAP seconds)
     GAP = 40

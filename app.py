@@ -1,5 +1,5 @@
 """Evergreen Stock - one app for stock, production, dispatch, orders, returns, raw material and reports."""
-import io, os, zipfile
+import io, os, time, zipfile
 from datetime import date, timedelta
 import pandas as pd
 import streamlit as st
@@ -8,7 +8,7 @@ import streamlit.components.v1 as components
 import importlib
 import logic as L
 import store as _store
-RELEASE = "2026-10-30-b"        # change on every release; it makes the app reload its own parts after an update
+RELEASE = "2026-10-30-c"        # change on every release; it makes the app reload its own parts after an update
 if getattr(L, "LOGIC_VERSION", None) != RELEASE:
     importlib.reload(_store); importlib.reload(L)
 from store import Store, LocalBackend, SheetsBackend, today, new_id, SCHEMA
@@ -70,14 +70,28 @@ def combo(label, options, key, placeholder=""):
 LIVE = S.b.kind == "sheets"
 
 
+QUIET = {"make_user", "set_pin", "login"}      # never write PINs into the log
+
+
+def act(action, detail="", result="ok", t0=None):
+    """Record one activity (who, where, what, how long) in the Log tab. Never breaks the app."""
+    try:
+        S.log(st.session_state.get("me", ""), st.session_state.get("role", ""), action, st.session_state.get("page", ""), detail, result, int((time.time() - t0) * 1000) if t0 else "")
+    except Exception:
+        pass
+
+
 def run(fn, *a, ok=None, **k):
     """Run a save; show a plain message on a problem. Returns True when saved."""
+    t0 = time.time(); name = fn.__name__
+    detail = ", ".join(str(x) for x in a)[:240] if name not in QUIET else str(a[0])
     try:
         fn(S, *a, **k)
     except L.Problem as e:
-        st.error(str(e)); return False
+        act(name, detail + " -> " + str(e), "problem", t0); st.error(str(e)); return False
     except Exception as e:
-        st.error("Could not save. Please try again. (%s)" % str(e)[:160]); return False
+        act(name, detail + " -> " + str(e)[:120], "error", t0); st.error("Could not save. Please try again. (%s)" % str(e)[:160]); return False
+    act(name, detail, "ok", t0)
     if ok: st.toast(ok, icon="✅")
     return True
 
@@ -119,7 +133,8 @@ def login_screen():
             try:
                 tok, u = L.login(S, nm, pin)
             except L.Problem as e:
-                st.error(str(e)); return
+                S.log(nm, "", "login", "login", str(e), "problem"); st.error(str(e)); return
+            S.log(nm, u["role"], "login", "login", "signed in")
             st.session_state["tok"] = tok; (None if u["role"] == "admin" else st.query_params.__setitem__("s", tok)); set_cookie(tok); st.rerun()
     st.caption("You stay signed in on this phone. You will not need to type the PIN again.")
 
@@ -141,6 +156,12 @@ if user["role"] == "admin":
 elif st.query_params.get("s") != st.session_state["tok"]: st.query_params["s"] = st.session_state["tok"]
 if st.context.cookies.get("sb_s") != st.session_state["tok"]: set_cookie(st.session_state["tok"])
 ME, ROLE = user["name"], user["role"]
+st.session_state["me"], st.session_state["role"] = ME, ROLE
+if not st.session_state.get("_opened"):          # once per visit: who opened the app, on what kind of device
+    st.session_state["_opened"] = True
+    try: ua = (st.context.headers.get("User-Agent") or "").lower()
+    except Exception: ua = ""
+    act("open", "phone" if ("mobile" in ua or "android" in ua or "iphone" in ua) else ("computer" if ua else ""))
 S.maybe_backup(L.backup_now)
 IS_ADMIN = ROLE == "admin"
 CAN_MANAGE = ROLE in ("admin", "supervisor")
@@ -324,12 +345,12 @@ def screen_dispatch():
     c1, c2 = st.columns(2)
     with c1:
         veh = st.text_input("Vehicle number", key="d_veh", placeholder="Type it, e.g. KA 06 AB 1234")
-        recent = []
+        recent_v = []
         for m in reversed(S.rows("Moves")):
-            if m["type"] == "dispatch" and m["vehicle"] and m["vehicle"] not in recent: recent.append(m["vehicle"])
-            if len(recent) >= 6: break
-        if recent:
-            pick = st.selectbox("Or choose a recent vehicle", recent, index=None, placeholder="Recent vehicles", key="d_veh_r")
+            if m["type"] == "dispatch" and m["vehicle"] and m["vehicle"] not in recent_v: recent_v.append(m["vehicle"])
+            if len(recent_v) >= 6: break
+        if recent_v:
+            pick = st.selectbox("Or choose a recent vehicle", recent_v, index=None, placeholder="Recent vehicles", key="d_veh_r")
             if pick and not veh.strip(): veh = pick
     with c2: party = combo("Customer / place", parties, "d_party", "Type name")
     cart = st.session_state.setdefault("cart", [])
@@ -377,8 +398,8 @@ def screen_orders():
             if o["status"] != "open": continue
             n += 1
             c1, c2, c3 = st.columns([4, 1, 1]); c1.write("**%s** — %s %s  \n%s · needed by %s" % (o["party"], L.fmt(o["qty"]), names.get(o["item_id"], "?"), o["user"], o["due"]))
-            if c2.button("Done", key="od" + o["id"]): L.set_order_status(S, o["id"], "done"); st.rerun()
-            if c3.button("Drop", key="oc" + o["id"]): L.set_order_status(S, o["id"], "cancelled"); st.rerun()
+            if c2.button("Done", key="od" + o["id"]): L.set_order_status(S, o["id"], "done"); act("order_done", o["id"]); st.rerun()
+            if c3.button("Drop", key="oc" + o["id"]): L.set_order_status(S, o["id"], "cancelled"); act("order_dropped", o["id"]); st.rerun()
         if not n: st.caption("None open.")
 
 
@@ -455,7 +476,7 @@ def screen_count():
         if not got: st.warning("Nothing typed yet.")
         else:
             try:
-                n = L.add_counts(S, ME, got); st.toast("Updated %d items" % n, icon="✅"); st.rerun()
+                n = L.add_counts(S, ME, got); act("add_counts", "%d items" % n); st.toast("Updated %d items" % n, icon="✅"); st.rerun()
             except L.Problem as e: st.error(str(e))
 
 
@@ -536,7 +557,7 @@ def screen_admin():
             if b.form_submit_button("Switch off / on"):
                 u = next(x for x in us if x["name"] == who)
                 if who == ME: st.error("You cannot switch yourself off.")
-                else: L.update_user(S, who, active=0 if str(u["active"]) in ("1", "True", "true") else 1); st.toast("Done", icon="✅"); st.rerun()
+                else: L.update_user(S, who, active=0 if str(u["active"]) in ("1", "True", "true") else 1); act("user_switch", who); st.toast("Done", icon="✅"); st.rerun()
         st.caption("Roles — supervisor: everything except prices/people. operator: production, count, raw. loader: stock, dispatch, returns. sales: stock, orders, returns. Only admin sees prices and value.")
     with t3:
         for kind, title in (("category", "Categories"), ("vehicle", "Vehicles"), ("machine", "Machines")):
@@ -555,10 +576,12 @@ def screen_admin():
     with t5:
         st.write("**Google Sheet register.** The app keeps a tab called *%s* in your Google Sheet up to date by itself: Opening, In, Out and Closing for every day, in your Excel layout. You never type in the Sheet." % ("Register " + today()[:7]))
         if S.sync_error: st.warning("Last sheet update failed: " + S.sync_error)
+        st.write("**Activity log:** every login, screen opened, save, edit, undo and error is written to a tab called *Log* in the Google Sheet (who, when, what, how long it took). Use it to see what staff do and where things go wrong.")
+        if S.log_error: st.warning("Last log write failed: " + S.log_error)
         st.write("**Daily backup:** a copy of all your data is saved once a day as a tab called *Backup <date>* in the Google Sheet. The last 7 days are kept. " + ("Today's backup is done." if S.bk_day == today() else "Today's backup is not done yet."))
         if S.bk_error: st.warning("Last backup problem: " + S.bk_error)
         if st.button("Back up now"):
-            try: L.backup_now(S, today()); S.bk_day = today(); st.toast("Backup saved", icon="✅")
+            try: L.backup_now(S, today()); S.bk_day = today(); act("backup_now"); st.toast("Backup saved", icon="✅")
             except Exception as e: st.error("Could not back up: %s" % str(e)[:200])
         if st.button("Update the Google Sheet now"):
             try: L.sync_register(S); S.synced = S.writes; st.toast("Sheet updated", icon="✅")
@@ -567,7 +590,7 @@ def screen_admin():
         st.caption("Sets every item's stock to 0. Nothing is deleted; the history stays. Use it once before you begin.")
         sure = st.text_input("Type RESET to confirm", key="reset_ok")
         if st.button("Set all stock to zero") and sure.strip() == "RESET":
-            n = L.reset_all_stock(S, ME); st.toast("Stock set to zero for %d items" % n, icon="✅")
+            n = L.reset_all_stock(S, ME); act("reset_all_stock", "%d items" % n); st.toast("Stock set to zero for %d items" % n, icon="✅")
         st.divider()
         st.write("Your data lives in %s." % ("your Google Sheet (you can open it any time)" if LIVE else "the folder `trial_data` on this computer"))
         buf = io.BytesIO()
@@ -589,7 +612,7 @@ def screen_admin():
                     st.caption("%d lines. Check them, then press the button." % len(df))
                     if st.button("Load this opening stock", type="primary"):
                         try:
-                            made, added = L.import_opening(S, ME, df.to_dict("records"), today())
+                            made, added = L.import_opening(S, ME, df.to_dict("records"), today()); act("import_opening", "%d lines, %d new items" % (added, made))
                             st.success("Done. %d lines entered, %d new items created." % (added, made))
                         except L.Problem as e: st.error(str(e))
                         except Exception as e: st.error("Could not load. (%s)" % str(e)[:160])
@@ -602,11 +625,14 @@ st.markdown("### 🌿 Evergreen Stock" + ("" if LIVE else "  ·  TRIAL"))
 with st.sidebar:
     st.write("Signed in: **%s** (%s)" % (ME, ROLE))
     if st.button("Sign out"):
-        L.end_session(S, st.session_state.get("tok")); set_cookie(None); st.session_state.clear(); st.query_params.clear(); st.rerun()
+        act("logout"); L.end_session(S, st.session_state.get("tok")); set_cookie(None); st.session_state.clear(); st.query_params.clear(); st.rerun()
 nav = L.NAV[ROLE]
 page = st.radio("Go to", nav, horizontal=True, label_visibility="collapsed", key="page")
+if st.session_state.get("_lastpage") != page:    # one line each time someone opens a different screen
+    st.session_state["_lastpage"] = page; act("view", page)
 try:
     SCREENS[page]()
 except Exception as e:  # never show a stack trace to staff
+    act("screen_error", str(e)[:200], "error")
     st.error("Something went wrong. Please refresh the page. (%s)" % str(e)[:140])
     if os.environ.get("STOCK_DEBUG"): raise
