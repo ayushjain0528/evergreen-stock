@@ -8,7 +8,7 @@ import streamlit.components.v1 as components
 import importlib
 import logic as L
 import store as _store
-RELEASE = "2026-10-30-a"        # change on every release; it makes the app reload its own parts after an update
+RELEASE = "2026-10-30-b"        # change on every release; it makes the app reload its own parts after an update
 if getattr(L, "LOGIC_VERSION", None) != RELEASE:
     importlib.reload(_store); importlib.reload(L)
 from store import Store, LocalBackend, SheetsBackend, today, new_id, SCHEMA
