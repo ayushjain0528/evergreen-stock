@@ -4,7 +4,7 @@ import pandas as pd
 from store import SCHEMA, new_id, stamp, today, hash_pin, check_hash, token_hash, new_token, now
 from datetime import timedelta
 
-LOGIC_VERSION = "2026-10-29-e"
+LOGIC_VERSION = "2026-10-30-a"
 BUCKETS = ["good", "hold", "bgrade", "recycle", "scrap"]
 BUCKET_NAME = {"good": "Good stock", "hold": "On hold (returns)", "bgrade": "B-grade", "recycle": "To recycle", "scrap": "Scrap"}
 ROLES = ["admin", "supervisor", "operator", "loader", "sales"]
@@ -93,7 +93,8 @@ def add_production(store, user, item_id, qty, date, shift="", machine="", note="
 def add_dispatch(store, user, lines, vehicle, party, date, note="", allow_negative=False, ref=""):
     """lines = [(item_id, qty)]"""
     if not lines: raise Problem("Add at least one item.")
-    if not vehicle.strip(): raise Problem("Choose or type the vehicle.")
+    vehicle = " ".join(vehicle.upper().split())
+    if not vehicle: raise Problem("Type the vehicle number.")
     ref = ref or new_id()
     if already(store, ref): return
     need = {}

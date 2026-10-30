@@ -8,7 +8,7 @@ import streamlit.components.v1 as components
 import importlib
 import logic as L
 import store as _store
-RELEASE = "2026-10-29-e"        # change on every release; it makes the app reload its own parts after an update
+RELEASE = "2026-10-30-a"        # change on every release; it makes the app reload its own parts after an update
 if getattr(L, "LOGIC_VERSION", None) != RELEASE:
     importlib.reload(_store); importlib.reload(L)
 from store import Store, LocalBackend, SheetsBackend, today, new_id, SCHEMA
@@ -322,7 +322,15 @@ def screen_dispatch():
     st.subheader("Dispatch")
     vehicles = L.list_values(S.rows("Lists"), "vehicle"); parties = sorted({o["party"] for o in S.rows("Orders")} | {m["party"] for m in S.rows("Moves") if m["type"] == "dispatch" and m["party"]})
     c1, c2 = st.columns(2)
-    with c1: veh = combo("Vehicle", vehicles, "d_veh", "Choose vehicle")
+    with c1:
+        veh = st.text_input("Vehicle number", key="d_veh", placeholder="Type it, e.g. KA 06 AB 1234")
+        recent = []
+        for m in reversed(S.rows("Moves")):
+            if m["type"] == "dispatch" and m["vehicle"] and m["vehicle"] not in recent: recent.append(m["vehicle"])
+            if len(recent) >= 6: break
+        if recent:
+            pick = st.selectbox("Or choose a recent vehicle", recent, index=None, placeholder="Recent vehicles", key="d_veh_r")
+            if pick and not veh.strip(): veh = pick
     with c2: party = combo("Customer / place", parties, "d_party", "Type name")
     cart = st.session_state.setdefault("cart", [])
     it = pick_item("disp", items, kinds=["finished"])
