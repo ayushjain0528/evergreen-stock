@@ -8,7 +8,7 @@ import streamlit.components.v1 as components
 import importlib
 import logic as L
 import store as _store
-RELEASE = "2026-10-31-c"        # change on every release; it makes the app reload its own parts after an update
+RELEASE = "2026-10-31-d"        # change on every release; it makes the app reload its own parts after an update
 if getattr(L, "LOGIC_VERSION", None) != RELEASE:
     importlib.reload(_store); importlib.reload(L)
 from store import Store, LocalBackend, SheetsBackend, today, new_id, SCHEMA
@@ -208,6 +208,8 @@ def recent(types, n=8, mine_only=False):
             with c2.popover("Edit"):
                 q = st.number_input("Correct quantity", min_value=0.0, value=abs(L.f(m["qty"])), step=1.0, format="%g", key="eq" + m["id"])
                 if st.button("Save", key="es" + m["id"]) and run(L.edit_move_qty, ME, m["id"], q, ok="Corrected"): st.rerun()
+                nd = st.date_input("Correct date" + (" (whole load)" if m["type"] == "dispatch" else ""), value=date.fromisoformat(m["date"]), max_value=date.today(), key="ed" + m["id"])
+                if st.button("Change date", key="ec" + m["id"]) and run(L.edit_move_date, ME, m["id"], str(nd), ok="Date changed"): st.rerun()
         if c3.button("Undo", key="u_" + m["id"]):
             run(L.void_move_group if m["type"] in ("waste", "return_decide") else L.void_move, ME, m["id"], ok="Cancelled"); st.rerun()
 
@@ -354,6 +356,7 @@ def screen_dispatch():
             pick = st.selectbox("Or choose a recent vehicle", recent_v, index=None, placeholder="Recent vehicles", key="d_veh_r")
             if pick and not veh.strip(): veh = pick
     with c2: party = combo("Customer / place", parties, "d_party", "Type name")
+    ddate = st.date_input("Dispatch date", value=date.today(), max_value=date.today(), key="d_date")
     cart = st.session_state.setdefault("cart", [])
     it = pick_item("disp", items, kinds=["finished"])
     with st.form("addline", clear_on_submit=True):
@@ -369,7 +372,7 @@ def screen_dispatch():
         neg = st.checkbox("Allow sending more than stock (admin only)", value=False) if IS_ADMIN else False
         note = st.text_input("Note (optional)", key="d_note")
         if st.button("✅ Save dispatch", type="primary", key="d_save"):
-            if run(L.add_dispatch, ME, [(c[0], c[1]) for c in cart], veh or "", party or "", today(), note, neg, nonce("disp"), ok="Dispatch saved"):
+            if run(L.add_dispatch, ME, [(c[0], c[1]) for c in cart], veh or "", party or "", str(ddate), note, neg, nonce("disp"), ok="Dispatch saved"):
                 burn("disp"); st.session_state["cart"] = []; st.rerun()
     st.divider(); recent(["dispatch"])
 

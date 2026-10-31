@@ -4,7 +4,7 @@ import pandas as pd
 from store import SCHEMA, new_id, stamp, today, hash_pin, check_hash, token_hash, new_token, now
 from datetime import timedelta
 
-LOGIC_VERSION = "2026-10-31-c"
+LOGIC_VERSION = "2026-10-31-d"
 BUCKETS = ["good", "hold", "bgrade", "recycle", "scrap"]
 BUCKET_NAME = {"good": "Good stock", "hold": "On hold (returns)", "bgrade": "B-grade", "recycle": "To recycle", "scrap": "Scrap"}
 ROLES = ["admin", "supervisor", "operator", "loader", "sales"]
@@ -229,6 +229,18 @@ def edit_move_qty(store, user, move_id, qty):
     if new < old and m["bucket"] == "good" and good_now(store, m["item_id"]) + (new - old) < -1e-9:
         raise Problem("That would make the stock go below zero.")
     row = dict(m); row["qty"] = round(new, 3); row["note"] = (m["note"] + " [edited %s -> %s by %s]" % (fmt(abs(old)), fmt(q), user)).strip(); store.update("Moves", m["_r"], row)
+
+def edit_move_date(store, user, move_id, new_date):
+    """Change the date of an entry; for a dispatch this moves the whole load (all lines saved together)."""
+    m = next((x for x in store.rows("Moves") if x["id"] == move_id), None)
+    if not m or str(m["void"]) in ("1", "True", "true"): raise Problem("Entry not found.")
+    new_date = str(new_date)
+    if new_date > today(): raise Problem("The date cannot be in the future.")
+    group = [x for x in store.rows("Moves") if x["ref"] == m["ref"] and x["type"] == m["type"] and str(x["void"]) not in ("1", "True", "true")]
+    for g in group:
+        if g["date"] == new_date: continue
+        row = dict(g); row["date"] = new_date; row["note"] = (g["note"] + " [date %s -> %s by %s]" % (g["date"], new_date, user)).strip(); store.update("Moves", g["_r"], row)
+    return len(group)
 
 def add_order(store, user, party, item_id, qty, due, note=""):
     q = check_qty(qty)
