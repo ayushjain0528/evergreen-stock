@@ -8,7 +8,7 @@ import streamlit.components.v1 as components
 import importlib
 import logic as L
 import store as _store
-RELEASE = "2026-10-31-a"        # change on every release; it makes the app reload its own parts after an update
+RELEASE = "2026-10-31-b"        # change on every release; it makes the app reload its own parts after an update
 if getattr(L, "LOGIC_VERSION", None) != RELEASE:
     importlib.reload(_store); importlib.reload(L)
 from store import Store, LocalBackend, SheetsBackend, today, new_id, SCHEMA
@@ -480,12 +480,42 @@ def screen_count():
             except L.Problem as e: st.error(str(e))
 
 
+KIND = {"opening": "Opening / stock added", "production": "Production", "dispatch": "Dispatch", "inward": "Inward (purchase)", "return": "Return (on hold)",
+        "return_decide": "Return decided", "waste": "Waste / scrap", "raw_in": "Raw in", "raw_use": "Raw used", "count": "Count correction"}
+
+
+def item_history(items, moves):
+    """Every movement of one item, oldest to newest with a running balance, so a count can be reconciled line by line."""
+    st.caption("Pick one item to see everything that happened to it: opening, production, dispatch, returns, counts, and the balance after each line.")
+    it = pick_item("hist", items)
+    if it is None: return
+    m = moves[moves["item_id"] == it["id"]].copy().sort_values(["date", "ts"])
+    if m.empty: st.info("Nothing has been entered for this item yet."); return
+    m["good"] = m.apply(lambda r: 0.0 if (r["void"] or r["bucket"] != "good") else r["qty"], axis=1); m["Balance"] = m["good"].cumsum()
+    live = m[~m["void"] & (m["bucket"] == "good")]
+    c1, c2, c3 = st.columns(3)
+    c1.metric("In stock now", L.fmt(live["qty"].sum()) + " " + it["unit"])
+    c2.metric("Total in", L.fmt(live[live["qty"] > 0]["qty"].sum())); c3.metric("Total out", L.fmt(-live[live["qty"] < 0]["qty"].sum()))
+    by = live.groupby("type")["qty"].sum().rename(index=lambda t: KIND.get(t, t)).reset_index().rename(columns={"type": "Type", "qty": "Total"})
+    st.dataframe(by, hide_index=True, **WIDE)
+    m["Date"] = m["date"]; m["Time"] = m["ts"].str[11:16]; m["What"] = m["type"].map(lambda t: KIND.get(t, t))
+    m["In (+)"] = m["qty"].where((m["qty"] > 0) & (m["bucket"] == "good")); m["Out (-)"] = (-m["qty"]).where((m["qty"] < 0) & (m["bucket"] == "good"))
+    m["Where / who"] = m.apply(lambda r: " · ".join(x for x in [r["vehicle"], r["party"], ("Shift " + r["shift"]) if r["shift"] else "", r["machine"]] if x) + ("" if r["bucket"] == "good" else " [%s]" % r["bucket"]), axis=1)
+    m["Status"] = m["void"].map({True: "CANCELLED", False: ""}); m["By"] = m["user"]; m["Note"] = m["note"]
+    out = m[["Date", "Time", "What", "In (+)", "Out (-)", "Balance", "Where / who", "By", "Note", "Status"]]
+    newest = st.checkbox("Newest first", value=True, key="hist_new")
+    out = out.iloc[::-1] if newest else out
+    st.dataframe(out, hide_index=True, **WIDE)
+    st.download_button("Download this item's history (CSV)", out.to_csv(index=False), "history-%s.csv" % it["id"], "text/csv")
+
+
 def screen_reports():
     items, moves, tab = load()
     st.subheader("Reports")
     c1, c2 = st.columns(2); d1 = c1.date_input("From", value=date.today() - timedelta(days=6)); d2 = c2.date_input("To", value=date.today())
     live = moves[~moves["void"] & (moves["date"] >= str(d1)) & (moves["date"] <= str(d2))].merge(items[["id", "name", "brand", "category", "unit", "price"]], left_on="item_id", right_on="id", how="left")
-    t1, t2, t3, t4, t5 = st.tabs(["Production", "Dispatch", "Low stock", "Value" if IS_ADMIN else "Stock", "Inward"])
+    t0, t1, t2, t3, t4, t5 = st.tabs(["Item history", "Production", "Dispatch", "Low stock", "Value" if IS_ADMIN else "Stock", "Inward"])
+    with t0: item_history(items, moves)
     with t1:
         p = live[live["type"] == "production"].copy()
         added = live[(live["type"] == "opening") & (live["date"] > "2026-10-29")]        # stock typed in through Add Stock after the opening count

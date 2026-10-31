@@ -4,7 +4,7 @@ import pandas as pd
 from store import SCHEMA, new_id, stamp, today, hash_pin, check_hash, token_hash, new_token, now
 from datetime import timedelta
 
-LOGIC_VERSION = "2026-10-31-a"
+LOGIC_VERSION = "2026-10-31-b"
 BUCKETS = ["good", "hold", "bgrade", "recycle", "scrap"]
 BUCKET_NAME = {"good": "Good stock", "hold": "On hold (returns)", "bgrade": "B-grade", "recycle": "To recycle", "scrap": "Scrap"}
 ROLES = ["admin", "supervisor", "operator", "loader", "sales"]
