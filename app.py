@@ -8,7 +8,7 @@ import streamlit.components.v1 as components
 import importlib
 import logic as L
 import store as _store
-RELEASE = "2026-10-30-c"        # change on every release; it makes the app reload its own parts after an update
+RELEASE = "2026-10-31-a"        # change on every release; it makes the app reload its own parts after an update
 if getattr(L, "LOGIC_VERSION", None) != RELEASE:
     importlib.reload(_store); importlib.reload(L)
 from store import Store, LocalBackend, SheetsBackend, today, new_id, SCHEMA
@@ -487,18 +487,31 @@ def screen_reports():
     live = moves[~moves["void"] & (moves["date"] >= str(d1)) & (moves["date"] <= str(d2))].merge(items[["id", "name", "brand", "category", "unit", "price"]], left_on="item_id", right_on="id", how="left")
     t1, t2, t3, t4, t5 = st.tabs(["Production", "Dispatch", "Low stock", "Value" if IS_ADMIN else "Stock", "Inward"])
     with t1:
-        p = live[live["type"] == "production"]
-        if p.empty: st.caption("No production in these dates.")
-        else:
-            g = p.groupby(["category", "brand", "name", "unit"], as_index=False)["qty"].sum().rename(columns={"qty": "Made"}); st.dataframe(g, hide_index=True, **WIDE)
-            st.download_button("Download CSV", g.to_csv(index=False), "production.csv", "text/csv")
+        p = live[live["type"] == "production"].copy()
+        added = live[(live["type"] == "opening") & (live["date"] > "2026-10-29")]        # stock typed in through Add Stock after the opening count
+        if p.empty and added.empty: st.caption("No production in these dates.")
+        if not p.empty:
+            p["time"] = p["ts"].str[11:16]
+            st.metric("Total made", L.fmt(p["qty"].sum()) + " (all units)")
+            by = st.radio("Group by", ["name", "date", "machine", "shift", "user"], horizontal=True, key="rp_by",
+                          format_func=lambda x: {"name": "Item", "date": "Day", "machine": "Machine", "shift": "Shift", "user": "Person"}[x])
+            g = p.assign(**{by: p[by].replace("", "(not noted)")}).groupby([by, "unit"], as_index=False)["qty"].sum().rename(columns={"qty": "Made"}); st.dataframe(g, hide_index=True, **WIDE)
+            st.markdown("**Every production entry**")
+            full = p[["date", "time", "shift", "machine", "category", "brand", "name", "unit", "qty", "user", "note"]].rename(columns={"qty": "made"}).sort_values(["date", "time"], ascending=False)
+            st.dataframe(full, hide_index=True, **WIDE)
+            st.download_button("Download CSV", full.to_csv(index=False), "production.csv", "text/csv")
+        if not added.empty:
+            st.markdown("**Stock added directly (Add Stock), not entered as production**")
+            ad = added.assign(time=added["ts"].str[11:16])[["date", "time", "category", "brand", "name", "unit", "qty", "user", "note"]].rename(columns={"qty": "added"}).sort_values(["date", "time"], ascending=False)
+            st.dataframe(ad, hide_index=True, **WIDE)
     with t2:
         p = live[live["type"] == "dispatch"].copy(); p["qty"] = -p["qty"]
         if p.empty: st.caption("No dispatch in these dates.")
         else:
             by = st.radio("Group by", ["vehicle", "party", "name"], horizontal=True, format_func=lambda x: {"vehicle": "Vehicle", "party": "Customer", "name": "Item"}[x])
             g = p.groupby([by, "unit"], as_index=False)["qty"].sum().rename(columns={"qty": "Sent"}); st.dataframe(g, hide_index=True, **WIDE)
-            full = p[["date", "vehicle", "party", "brand", "name", "unit", "qty", "user"]].rename(columns={"qty": "sent"})
+            full = p.assign(time=p["ts"].str[11:16])[["date", "time", "vehicle", "party", "brand", "name", "unit", "qty", "user"]].rename(columns={"qty": "sent"}).sort_values(["date", "time"], ascending=False)
+            st.markdown("**Every dispatch entry**"); st.dataframe(full, hide_index=True, **WIDE)
             st.download_button("Download full list (CSV)", full.to_csv(index=False), "dispatch.csv", "text/csv")
     with t3:
         low = tab[(tab["min_level"] > 0) & (tab["good"] < tab["min_level"])][["category", "brand", "name", "unit", "good", "min_level"]]
