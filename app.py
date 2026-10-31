@@ -8,7 +8,7 @@ import streamlit.components.v1 as components
 import importlib
 import logic as L
 import store as _store
-RELEASE = "2026-10-31-b"        # change on every release; it makes the app reload its own parts after an update
+RELEASE = "2026-10-31-c"        # change on every release; it makes the app reload its own parts after an update
 if getattr(L, "LOGIC_VERSION", None) != RELEASE:
     importlib.reload(_store); importlib.reload(L)
 from store import Store, LocalBackend, SheetsBackend, today, new_id, SCHEMA
@@ -323,18 +323,19 @@ def screen_inward():
 
 
 def screen_production():
-    items, _, _ = load()
+    items, _, tab = load()
     st.subheader("Production")
-    it = pick_item("prod", items, kinds=["finished"])
+    st.caption("Making something that is not in the list yet? Pick 'Other (type it)' in Category, Brand or Item. It is added as a new product when you save.")
+    it, new, unit = entry_picker("prod", items, tab, kinds=["finished"])
     machines = L.list_values(S.rows("Lists"), "machine")
     with st.form("prod", clear_on_submit=True):
-        qty = qty_box("Quantity made", unit=(it["unit"] if it is not None else ""))
+        qty = qty_box("Quantity made", unit=unit)
         a, b, c = st.columns(3)
         shift = a.selectbox("Shift", ["", "A", "B"]); mach = b.selectbox("Machine (optional)", [""] + machines); d = c.date_input("Date", value=date.today())
         note = st.text_input("Note (optional)")
         if st.form_submit_button("Save production"):
-            if it is None: st.error("Choose the item first.")
-            elif run(L.add_production, ME, it["id"], qty, str(d), shift, mach, note, nonce("prod"), ok="Saved %s %s" % (L.fmt(qty), it["name"])): burn("prod"); reset_picker("prod"); st.rerun()
+            iid = resolve_item(it, new)
+            if iid and run(L.add_production, ME, iid, qty, str(d), shift, mach, note, nonce("prod"), ok="Saved %s" % L.fmt(qty)): burn("prod"); reset_picker("prod"); st.rerun()
     recent(["production"])
 
 
