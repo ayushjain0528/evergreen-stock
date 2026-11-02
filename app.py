@@ -8,7 +8,7 @@ import streamlit.components.v1 as components
 import importlib
 import logic as L
 import store as _store
-RELEASE = "2026-11-02-a"        # change on every release; it makes the app reload its own parts after an update
+RELEASE = "2026-11-02-b"        # change on every release; it makes the app reload its own parts after an update
 if getattr(L, "LOGIC_VERSION", None) != RELEASE:
     importlib.reload(_store); importlib.reload(L)
 from store import Store, LocalBackend, SheetsBackend, today, new_id, SCHEMA
@@ -200,7 +200,7 @@ def slip_button(ref, label, key):
         load = L.dispatch_load(S, ref)
         if not load: return
         import slip as _slip
-        st.download_button(label, _slip.make_slip(load), "dispatch-%s.pdf" % ref[:6], "application/pdf", key=key)
+        st.download_button(label, _slip.make_slip(load), "dispatch-%s.pdf" % L.trip_of(ref)[:6], "application/pdf", key=key)
     except Exception as e:
         st.caption("Slip not available (%s)" % str(e)[:80])
 
@@ -225,8 +225,8 @@ def recent(types, n=8, mine_only=False):
                 if st.button("Save", key="es" + m["id"]) and run(L.edit_move_qty, ME, m["id"], q, ok="Corrected"): st.rerun()
                 nd = st.date_input("Correct date" + (" (whole load)" if m["type"] == "dispatch" else ""), value=date.fromisoformat(m["date"]), max_value=date.today(), key="ed" + m["id"])
                 if st.button("Change date", key="ec" + m["id"]) and run(L.edit_move_date, ME, m["id"], str(nd), ok="Date changed"): st.rerun()
-        if m["type"] == "dispatch" and m["ref"] not in shown_refs:
-            shown_refs.add(m["ref"]); slip_button(m["ref"], "Slip (PDF)", "sl_" + m["id"])
+        if m["type"] == "dispatch" and L.trip_of(m["ref"]) not in shown_refs:
+            shown_refs.add(L.trip_of(m["ref"])); slip_button(m["ref"], "Slip (PDF)", "sl_" + m["id"])
         if c3.button("Undo", key="u_" + m["id"]):
             run(L.void_move_group if m["type"] in ("waste", "return_decide") else L.void_move, ME, m["id"], ok="Cancelled"); st.rerun()
 
@@ -372,45 +372,55 @@ def screen_dispatch():
         if recent_v:
             pick = st.selectbox("Or choose a recent vehicle", recent_v, index=None, placeholder="Recent vehicles", key="d_veh_r")
             if pick and not veh.strip(): veh = pick
-    with c2: party = combo("Customer / place", parties, "d_party", "Type name")
+    st.caption("One vehicle can carry several customers: choose the customer, add their items, then change the customer and add more. Save once at the end.")
+    with c2: party = combo("Customer / place for the next items", parties, "d_party", "Type name")
     ddate = st.date_input("Dispatch date", value=date.today(), max_value=date.today(), key="d_date")
     cart = st.session_state.setdefault("cart", [])
     it = pick_item("disp", items, kinds=["finished"])
     with st.form("addline", clear_on_submit=True):
         qty = qty_box("Quantity to load", unit=(it["unit"] if it is not None else ""))
-        if st.form_submit_button("➕ Add to this load"):
+        if st.form_submit_button("➕ Add to this vehicle"):
             if it is None or not qty: st.error("Choose an item and quantity.")
-            else: cart.append((it["id"], float(qty), it["name"], it["unit"])); reset_picker("disp"); st.rerun()
+            else: cart.append((it["id"], float(qty), it["name"], it["unit"], (party or "").strip())); reset_picker("disp"); st.rerun()
     if cart:
-        st.markdown("**This load**")
-        for i, (iid, q, nm, un) in enumerate(cart):
-            a, b = st.columns([4, 1]); a.write("%s %s — %s" % (L.fmt(q), un, nm))
-            if b.button("✖", key="rm%d" % i): cart.pop(i); st.rerun()
+        st.markdown("**On this vehicle**")
+        groups = []
+        for c in cart:
+            if c[4] not in groups: groups.append(c[4])
+        for gp in groups:
+            if len(groups) > 1 or gp: st.markdown("**→ %s**" % (gp or "(no customer named)"))
+            for i, c in enumerate(cart):
+                if c[4] != gp: continue
+                a, b = st.columns([4, 1]); a.write("%s %s — %s" % (L.fmt(c[1]), c[3], c[2]))
+                if b.button("✖", key="rm%d" % i): cart.pop(i); st.rerun()
         neg = st.checkbox("Allow sending more than stock (admin only)", value=False) if IS_ADMIN else False
         note = st.text_input("Note (optional)", key="d_note")
-        cands = L.open_orders_for(S, party or "", {c[0] for c in cart}) if party else []
-        ticked = []
-        if cands:
-            st.markdown("**Open orders of this customer. Ticked ones are counted against this load.**")
-            names = items.set_index("id")["name"].to_dict()
+        ticked = {}
+        names = items.set_index("id")["name"].to_dict()
+        for gp in groups:
+            cands = L.open_orders_for(S, gp, {c[0] for c in cart if c[4] == gp}) if gp else []
+            if cands: st.markdown("**Open orders of %s. Ticked ones are counted against this load.**" % gp)
             for o in cands:
+                if o["id"] in ticked.get(gp, []) or any(o["id"] in v for v in ticked.values()): continue
                 if st.checkbox("%s: %s (ordered %s, already sent %s, pending %s)" % (o["party"], names.get(o["item_id"], "?"), L.fmt(L.f(o["qty"])), L.fmt(L.f(o.get("sent"))), L.fmt(o["pending"])),
-                               value=True, key="dk_" + o["id"]): ticked.append(o["id"])
+                               value=True, key="dk_" + o["id"]): ticked.setdefault(gp, []).append(o["id"])
         if st.button("✅ Save dispatch", type="primary", key="d_save"):
-            ref = nonce("disp")
-            if run(L.add_dispatch, ME, [(c[0], c[1]) for c in cart], veh or "", party or "", str(ddate), note, neg, ref, ok="Dispatch saved"):
-                msg = ""
-                if ticked:
+            trip = nonce("disp")
+            drops = [(gp, [(c[0], c[1]) for c in cart if c[4] == gp]) for gp in groups]
+            if run(L.add_dispatch_trip, ME, drops, veh or "", str(ddate), note, neg, trip, ok="Dispatch saved"):
+                msg = ""; n_ord = 0; n_fin = 0
+                for gp, lines in drops:
+                    if not ticked.get(gp): continue
                     try:
-                        res = L.apply_dispatch_to_orders(S, ticked, [(c[0], c[1]) for c in cart])
-                        act("orders_ticked", "%d orders" % len(res)); msg = "%d order(s) updated, %d finished" % (len(res), sum(1 for x in res if x[3]))
+                        res = L.apply_dispatch_to_orders(S, ticked[gp], lines); n_ord += len(res); n_fin += sum(1 for x in res if x[3])
                     except Exception as e: act("orders_ticked", str(e)[:120], "error")
-                st.session_state["last_slip"] = ref; st.session_state["last_slip_msg"] = msg
+                if n_ord: act("orders_ticked", "%d orders" % n_ord); msg = "%d order(s) updated, %d finished" % (n_ord, n_fin)
+                st.session_state["last_slip"] = trip + ".0"; st.session_state["last_slip_msg"] = msg
                 burn("disp"); st.session_state["cart"] = []; st.rerun()
     ls = st.session_state.get("last_slip")
     if ls and not cart:
         st.success("Dispatch saved. " + st.session_state.get("last_slip_msg", ""))
-        slip_button(ls, "Download dispatch slip (PDF)", "slip_last")
+        slip_button(ls, "Download vehicle slip (PDF)", "slip_last")
     st.divider(); recent(["dispatch"])
 
 

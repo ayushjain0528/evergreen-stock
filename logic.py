@@ -4,7 +4,7 @@ import pandas as pd
 from store import SCHEMA, new_id, stamp, today, hash_pin, check_hash, token_hash, new_token, now
 from datetime import timedelta
 
-LOGIC_VERSION = "2026-11-02-a"
+LOGIC_VERSION = "2026-11-02-b"
 BUCKETS = ["good", "hold", "bgrade", "recycle", "scrap"]
 BUCKET_NAME = {"good": "Good stock", "hold": "On hold (returns)", "bgrade": "B-grade", "recycle": "To recycle", "scrap": "Scrap"}
 ROLES = ["admin", "supervisor", "operator", "loader", "sales"]
@@ -279,15 +279,45 @@ def apply_dispatch_to_orders(store, ticked_ids, lines):
         done.append((o["party"], o["item_id"], take, finished))
     return done
 
+def trip_of(ref): return (ref or "").split(".")[0]
+
 def dispatch_load(store, ref):
-    """All lines of one saved dispatch (same ref), for the slip."""
-    ms = [m for m in store.rows("Moves") if m["ref"] == ref and m["type"] == "dispatch" and str(m["void"]) not in ("1", "True", "true")]
+    """One vehicle trip: every drop (customer) saved with the same trip id, for the slip."""
+    trip = trip_of(ref)
+    ms = [m for m in store.rows("Moves") if m["type"] == "dispatch" and trip_of(m["ref"]) == trip and str(m["void"]) not in ("1", "True", "true")]
     if not ms: return None
     its = {i["id"]: i for i in store.rows("Items")}
-    lines = [dict(brand=its.get(m["item_id"], {}).get("brand", ""), name=(its.get(m["item_id"], {}).get("item", "") + " " + its.get(m["item_id"], {}).get("spec", "")).strip(),
-                  unit=its.get(m["item_id"], {}).get("unit", ""), qty=-f(m["qty"])) for m in ms]
+    drops = {}
+    for m in ms:
+        it = its.get(m["item_id"], {})
+        drops.setdefault(m["party"], []).append(dict(brand=it.get("brand", ""), name=(it.get("item", "") + " " + it.get("spec", "")).strip(), unit=it.get("unit", ""), qty=-f(m["qty"])))
     m0 = ms[0]
-    return dict(ref=ref, date=m0["date"], vehicle=m0["vehicle"], party=m0["party"], user=m0["user"], note=m0["note"], lines=lines)
+    return dict(ref=trip, date=m0["date"], vehicle=m0["vehicle"], user=m0["user"], note=m0["note"], drops=list(drops.items()),
+                party=", ".join(p for p in drops if p), lines=[l for v in drops.values() for l in v])
+
+def add_dispatch_trip(store, user, drops, vehicle, date, note="", allow_negative=False, trip=""):
+    """One vehicle, one or more customers. drops = [(party, [(item_id, qty)])]. All saved together or not at all."""
+    drops = [(p, ls) for p, ls in drops if ls]
+    if not drops: raise Problem("Add at least one item.")
+    vehicle = " ".join(vehicle.upper().split())
+    if not vehicle: raise Problem("Type the vehicle number.")
+    trip = trip or new_id()
+    if already(store, trip + ".0"): return
+    need = {}
+    for _, ls in drops:
+        for iid, q in ls: need[iid] = need.get(iid, 0.0) + check_qty(q)
+    if not allow_negative:
+        for iid, q in need.items():
+            have = good_now(store, iid)
+            if q > have + 1e-9:
+                nm = next((r for r in store.rows("Items") if r["id"] == iid), {})
+                raise Problem("Not enough stock for %s %s: you have %s, trying to send %s in total. Fix the count in the Count tab first." % (nm.get("item", ""), nm.get("spec", ""), fmt(have), fmt(q)))
+    rows = []
+    for k, (party, ls) in enumerate(drops):
+        agg = {}
+        for iid, q in ls: agg[iid] = agg.get(iid, 0.0) + q
+        rows += [_move(i, -q, "good", "dispatch", "%s.%d" % (trip, k), user, date, vehicle=vehicle, party=party.strip(), note=note) for i, q in agg.items()]
+    store.append("Moves", rows)
 
 def add_order(store, user, party, item_id, qty, due, note=""):
     q = check_qty(qty)
