@@ -4,7 +4,7 @@ import pandas as pd
 from store import SCHEMA, new_id, stamp, today, hash_pin, check_hash, token_hash, new_token, now
 from datetime import timedelta
 
-LOGIC_VERSION = "2026-10-31-d"
+LOGIC_VERSION = "2026-11-02-a"
 BUCKETS = ["good", "hold", "bgrade", "recycle", "scrap"]
 BUCKET_NAME = {"good": "Good stock", "hold": "On hold (returns)", "bgrade": "B-grade", "recycle": "To recycle", "scrap": "Scrap"}
 ROLES = ["admin", "supervisor", "operator", "loader", "sales"]
@@ -242,10 +242,57 @@ def edit_move_date(store, user, move_id, new_date):
         row = dict(g); row["date"] = new_date; row["note"] = (g["note"] + " [date %s -> %s by %s]" % (g["date"], new_date, user)).strip(); store.update("Moves", g["_r"], row)
     return len(group)
 
+# ---------- tie dispatch to orders ----------
+_GENERIC = {"traders", "agro", "enterprises", "solutions", "pipes", "agencies", "irrigation", "company", "stores", "marketing", "agri"}
+
+def _tokens(s):
+    return {t for t in "".join(c if c.isalnum() else " " for c in str(s).lower()).split() if len(t) >= 5 and t not in _GENERIC}
+
+def party_match(a, b):
+    na, nb = " ".join(str(a).lower().split()), " ".join(str(b).lower().split())
+    if not na or not nb: return False
+    return na == nb or bool(_tokens(a) & _tokens(b))
+
+def open_orders_for(store, party, item_ids):
+    """Open orders of this customer (name need not be typed exactly the same) for the items being loaded, oldest first, with how much is still pending."""
+    out = []
+    for o in store.rows("Orders"):
+        if o["status"] != "open" or o["item_id"] not in item_ids or not party_match(o["party"], party): continue
+        pend = f(o["qty"]) - f(o.get("sent"))
+        if pend > 1e-9: out.append(dict(o, pending=pend))
+    return sorted(out, key=lambda r: (r["date"], r["ts"]))
+
+def apply_dispatch_to_orders(store, ticked_ids, lines):
+    """Count what was just loaded against the ticked orders (oldest first). An order is finished when everything ordered has been sent. Returns what was done."""
+    left = {}
+    for iid, q in lines: left[iid] = left.get(iid, 0.0) + q
+    done = []
+    for o in sorted([x for x in store.rows("Orders") if x["id"] in set(ticked_ids) and x["status"] == "open"], key=lambda r: (r["date"], r["ts"])):
+        have = left.get(o["item_id"], 0.0)
+        if have <= 1e-9: continue
+        pend = f(o["qty"]) - f(o.get("sent")); take = min(pend, have)
+        if take <= 1e-9: continue
+        row = dict(o); row["sent"] = round(f(o.get("sent")) + take, 3)
+        finished = row["sent"] >= f(o["qty"]) - 1e-9
+        if finished: row["status"] = "done"
+        store.update("Orders", o["_r"], row); left[o["item_id"]] = have - take
+        done.append((o["party"], o["item_id"], take, finished))
+    return done
+
+def dispatch_load(store, ref):
+    """All lines of one saved dispatch (same ref), for the slip."""
+    ms = [m for m in store.rows("Moves") if m["ref"] == ref and m["type"] == "dispatch" and str(m["void"]) not in ("1", "True", "true")]
+    if not ms: return None
+    its = {i["id"]: i for i in store.rows("Items")}
+    lines = [dict(brand=its.get(m["item_id"], {}).get("brand", ""), name=(its.get(m["item_id"], {}).get("item", "") + " " + its.get(m["item_id"], {}).get("spec", "")).strip(),
+                  unit=its.get(m["item_id"], {}).get("unit", ""), qty=-f(m["qty"])) for m in ms]
+    m0 = ms[0]
+    return dict(ref=ref, date=m0["date"], vehicle=m0["vehicle"], party=m0["party"], user=m0["user"], note=m0["note"], lines=lines)
+
 def add_order(store, user, party, item_id, qty, due, note=""):
     q = check_qty(qty)
     if not party.strip(): raise Problem("Enter the customer name.")
-    store.append("Orders", [dict(id=new_id(), ts=stamp(), date=today(), due=due, party=party.strip(), item_id=item_id, qty=q, status="open", note=note, user=user)])
+    store.append("Orders", [dict(id=new_id(), ts=stamp(), date=today(), due=due, party=party.strip(), item_id=item_id, qty=q, status="open", note=note, user=user, sent=0)])
 
 def set_order_status(store, oid, status):
     o = next((x for x in store.rows("Orders") if x["id"] == oid), None)
@@ -255,7 +302,7 @@ def to_produce(store):
     items = items_df(store.rows("Items"), False); st = stock_table(items, moves_df(store.rows("Moves"))).set_index("id")
     need = {}
     for o in store.rows("Orders"):
-        if o["status"] == "open": need[o["item_id"]] = need.get(o["item_id"], 0.0) + f(o["qty"])
+        if o["status"] == "open": need[o["item_id"]] = need.get(o["item_id"], 0.0) + max(0.0, f(o["qty"]) - f(o.get("sent")))
     rows = []
     for iid, n in need.items():
         if iid not in st.index: continue

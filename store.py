@@ -7,7 +7,7 @@ IST = timezone(timedelta(hours=5, minutes=30))
 SCHEMA = {
     "Items":    ["id", "category", "brand", "item", "spec", "unit", "kind", "price", "min_level", "std_weight", "active", "subcategory"],
     "Moves":    ["id", "ts", "date", "item_id", "qty", "bucket", "type", "ref", "party", "vehicle", "machine", "shift", "note", "user", "void"],
-    "Orders":   ["id", "ts", "date", "due", "party", "item_id", "qty", "status", "note", "user"],
+    "Orders":   ["id", "ts", "date", "due", "party", "item_id", "qty", "status", "note", "user", "sent"],
     "Lists":    ["kind", "name", "active"],
     "Users":    ["name", "role", "salt", "pin_hash", "active", "fails", "locked_until", "created"],
     "Sessions": ["token_hash", "user", "expires", "created"],

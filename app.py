@@ -8,7 +8,7 @@ import streamlit.components.v1 as components
 import importlib
 import logic as L
 import store as _store
-RELEASE = "2026-10-31-d"        # change on every release; it makes the app reload its own parts after an update
+RELEASE = "2026-11-02-a"        # change on every release; it makes the app reload its own parts after an update
 if getattr(L, "LOGIC_VERSION", None) != RELEASE:
     importlib.reload(_store); importlib.reload(L)
 from store import Store, LocalBackend, SheetsBackend, today, new_id, SCHEMA
@@ -16,7 +16,12 @@ from store import Store, LocalBackend, SheetsBackend, today, new_id, SCHEMA
 st.set_page_config(page_title="Evergreen Stock", page_icon="🌿", layout="centered", initial_sidebar_state="collapsed")
 st.markdown("""<style>
 .block-container{padding-top:1.2rem;padding-bottom:3rem;max-width:760px}
-div[data-testid="stMetricValue"]{font-size:1.4rem}
+div[data-testid="stMetricValue"]{font-size:1.25rem}
+div[data-testid="stMetric"]{background:#f4f8f4;border:1px solid #dfe9df;border-radius:10px;padding:.5rem .7rem}
+div[data-testid="stMetricLabel"] p{font-size:.8rem;color:#55705a}
+button[data-baseweb="tab"]{padding:.5rem .7rem}
+div[data-baseweb="tab-list"]{overflow-x:auto;gap:.1rem}
+details{border-radius:10px}
 div[role="radiogroup"]{gap:.15rem .8rem}div[role="radiogroup"] label p{font-size:.92rem}
 .stButton>button,.stFormSubmitButton>button{width:100%;min-height:2.8rem;font-weight:600}
 </style>""", unsafe_allow_html=True)
@@ -190,6 +195,16 @@ def qty_box(label="Quantity", key=None, unit=""):
 
 EDITABLE = ("production", "inward", "opening", "dispatch", "raw_in", "raw_use")
 
+def slip_button(ref, label, key):
+    try:
+        load = L.dispatch_load(S, ref)
+        if not load: return
+        import slip as _slip
+        st.download_button(label, _slip.make_slip(load), "dispatch-%s.pdf" % ref[:6], "application/pdf", key=key)
+    except Exception as e:
+        st.caption("Slip not available (%s)" % str(e)[:80])
+
+
 def recent(types, n=8, mine_only=False):
     """Latest entries, each with Edit (quantity) and Undo."""
     rows = [m for m in S.rows("Moves") if m["type"] in types and str(m["void"]) not in ("1", "True", "true") and m["bucket"] in ("good", "hold")]
@@ -197,7 +212,7 @@ def recent(types, n=8, mine_only=False):
     show = list(reversed(rows))[:n]
     if not show: return
     items = L.items_df(S.rows("Items"), False).set_index("id")
-    st.markdown("**Latest entries**")
+    st.markdown("**Latest entries**"); shown_refs = set()
     for m in show:
         nm = items.loc[m["item_id"], "name"] if m["item_id"] in items.index else m["item_id"]
         un = items.loc[m["item_id"], "unit"] if m["item_id"] in items.index else ""
@@ -210,6 +225,8 @@ def recent(types, n=8, mine_only=False):
                 if st.button("Save", key="es" + m["id"]) and run(L.edit_move_qty, ME, m["id"], q, ok="Corrected"): st.rerun()
                 nd = st.date_input("Correct date" + (" (whole load)" if m["type"] == "dispatch" else ""), value=date.fromisoformat(m["date"]), max_value=date.today(), key="ed" + m["id"])
                 if st.button("Change date", key="ec" + m["id"]) and run(L.edit_move_date, ME, m["id"], str(nd), ok="Date changed"): st.rerun()
+        if m["type"] == "dispatch" and m["ref"] not in shown_refs:
+            shown_refs.add(m["ref"]); slip_button(m["ref"], "Slip (PDF)", "sl_" + m["id"])
         if c3.button("Undo", key="u_" + m["id"]):
             run(L.void_move_group if m["type"] in ("waste", "return_decide") else L.void_move, ME, m["id"], ok="Cancelled"); st.rerun()
 
@@ -371,9 +388,29 @@ def screen_dispatch():
             if b.button("✖", key="rm%d" % i): cart.pop(i); st.rerun()
         neg = st.checkbox("Allow sending more than stock (admin only)", value=False) if IS_ADMIN else False
         note = st.text_input("Note (optional)", key="d_note")
+        cands = L.open_orders_for(S, party or "", {c[0] for c in cart}) if party else []
+        ticked = []
+        if cands:
+            st.markdown("**Open orders of this customer. Ticked ones are counted against this load.**")
+            names = items.set_index("id")["name"].to_dict()
+            for o in cands:
+                if st.checkbox("%s: %s (ordered %s, already sent %s, pending %s)" % (o["party"], names.get(o["item_id"], "?"), L.fmt(L.f(o["qty"])), L.fmt(L.f(o.get("sent"))), L.fmt(o["pending"])),
+                               value=True, key="dk_" + o["id"]): ticked.append(o["id"])
         if st.button("✅ Save dispatch", type="primary", key="d_save"):
-            if run(L.add_dispatch, ME, [(c[0], c[1]) for c in cart], veh or "", party or "", str(ddate), note, neg, nonce("disp"), ok="Dispatch saved"):
+            ref = nonce("disp")
+            if run(L.add_dispatch, ME, [(c[0], c[1]) for c in cart], veh or "", party or "", str(ddate), note, neg, ref, ok="Dispatch saved"):
+                msg = ""
+                if ticked:
+                    try:
+                        res = L.apply_dispatch_to_orders(S, ticked, [(c[0], c[1]) for c in cart])
+                        act("orders_ticked", "%d orders" % len(res)); msg = "%d order(s) updated, %d finished" % (len(res), sum(1 for x in res if x[3]))
+                    except Exception as e: act("orders_ticked", str(e)[:120], "error")
+                st.session_state["last_slip"] = ref; st.session_state["last_slip_msg"] = msg
                 burn("disp"); st.session_state["cart"] = []; st.rerun()
+    ls = st.session_state.get("last_slip")
+    if ls and not cart:
+        st.success("Dispatch saved. " + st.session_state.get("last_slip_msg", ""))
+        slip_button(ls, "Download dispatch slip (PDF)", "slip_last")
     st.divider(); recent(["dispatch"])
 
 
@@ -401,7 +438,8 @@ def screen_orders():
         for o in reversed(S.rows("Orders")):
             if o["status"] != "open": continue
             n += 1
-            c1, c2, c3 = st.columns([4, 1, 1]); c1.write("**%s** — %s %s  \n%s · needed by %s" % (o["party"], L.fmt(o["qty"]), names.get(o["item_id"], "?"), o["user"], o["due"]))
+            c1, c2, c3 = st.columns([4, 1, 1]); c1.write("**%s** — %s %s  \n%s · needed by %s%s" % (o["party"], L.fmt(o["qty"]), names.get(o["item_id"], "?"), o["user"], o["due"],
+                                                         (" · **sent %s, pending %s**" % (L.fmt(L.f(o.get("sent"))), L.fmt(L.f(o["qty"]) - L.f(o.get("sent"))))) if L.f(o.get("sent")) > 0 else ""))
             if c2.button("Done", key="od" + o["id"]): L.set_order_status(S, o["id"], "done"); act("order_done", o["id"]); st.rerun()
             if c3.button("Drop", key="oc" + o["id"]): L.set_order_status(S, o["id"], "cancelled"); act("order_dropped", o["id"]); st.rerun()
         if not n: st.caption("None open.")
@@ -513,58 +551,98 @@ def item_history(items, moves):
     st.download_button("Download this item's history (CSV)", out.to_csv(index=False), "history-%s.csv" % it["id"], "text/csv")
 
 
+def units_line(df, col="qty"):
+    """'120 rolls · 40 sets' - totals kept apart per unit because rolls and pieces must never be added together."""
+    if df.empty: return "0"
+    g = df.groupby("unit")[col].sum()
+    return " · ".join("%s %s" % (L.fmt(v), u) for u, v in g.items() if v)
+
+
+def report_period():
+    pick = st.radio("Period", ["Today", "Yesterday", "Last 7 days", "This month", "Pick dates"], horizontal=True, index=2, key="rp_per", label_visibility="collapsed")
+    t = date.today()
+    if pick == "Today": d1 = d2 = t
+    elif pick == "Yesterday": d1 = d2 = t - timedelta(days=1)
+    elif pick == "Last 7 days": d1, d2 = t - timedelta(days=6), t
+    elif pick == "This month": d1, d2 = t.replace(day=1), t
+    else:
+        c1, c2 = st.columns(2); d1 = c1.date_input("From", value=t - timedelta(days=6), key="rp_d1"); d2 = c2.date_input("To", value=t, key="rp_d2")
+    st.caption("Showing %s to %s" % (d1.strftime("%d %b"), d2.strftime("%d %b %Y")))
+    return d1, d2
+
+
 def screen_reports():
     items, moves, tab = load()
     st.subheader("Reports")
-    c1, c2 = st.columns(2); d1 = c1.date_input("From", value=date.today() - timedelta(days=6)); d2 = c2.date_input("To", value=date.today())
-    live = moves[~moves["void"] & (moves["date"] >= str(d1)) & (moves["date"] <= str(d2))].merge(items[["id", "name", "brand", "category", "unit", "price"]], left_on="item_id", right_on="id", how="left")
-    t0, t1, t2, t3, t4, t5 = st.tabs(["Item history", "Production", "Dispatch", "Low stock", "Value" if IS_ADMIN else "Stock", "Inward"])
-    with t0: item_history(items, moves)
-    with t1:
+    st.caption("Period for Made, Sent and Received:"); d1, d2 = report_period()
+    t_stock, t_made, t_sent, t_in, t_low, t_hist = st.tabs(["Stock now", "Made", "Sent", "Received", "Low stock", "Item history"])
+    base = moves[~moves["void"]].merge(items[["id", "name", "brand", "category", "unit", "price"]], left_on="item_id", right_on="id", how="left")
+    QTY = {"qty": st.column_config.NumberColumn("Qty", format="%g")}
+
+    with t_stock:
+        cats = ["All categories"] + sorted(tab["category"].dropna().unique().tolist())
+        c1, c2 = st.columns([2, 1]); cat = c1.selectbox("Category", cats, key="rs_cat"); hide0 = c2.checkbox("Hide zero stock", value=True, key="rs_h0")
+        v = tab if cat == cats[0] else tab[tab["category"] == cat]
+        if hide0: v = v[(v["good"] != 0) | (v["hold"] != 0)]
+        c1, c2, c3 = st.columns(3); c1.metric("Items", len(v)); c2.metric("Total quantity", L.fmt(v["good"].sum()))
+        if IS_ADMIN: c3.metric("Stock value", L.money(v["value"].sum()))
+        else: c3.metric("On hold", L.fmt(v["hold"].sum()))
+        cols = ["category", "brand", "name", "unit", "good", "hold"] + (["price", "value"] if IS_ADMIN else [])
+        cc = {"category": "Category", "brand": "Brand", "name": "Item", "unit": "Unit", "good": st.column_config.NumberColumn("In stock", format="%g"), "hold": st.column_config.NumberColumn("On hold", format="%g")}
+        if IS_ADMIN: cc.update({"price": st.column_config.NumberColumn("Price", format="₹%g"), "value": st.column_config.NumberColumn("Value", format="₹%d")})
+        st.dataframe(v[cols], hide_index=True, column_config=cc, **WIDE)
+        st.download_button("Download stock sheet (CSV)", v[cols].to_csv(index=False), "stock.csv", "text/csv")
+
+    with t_made:
+        live = base[(base["date"] >= str(d1)) & (base["date"] <= str(d2))]
         p = live[live["type"] == "production"].copy()
-        added = live[(live["type"] == "opening") & (live["date"] > "2026-10-29")]        # stock typed in through Add Stock after the opening count
-        if p.empty and added.empty: st.caption("No production in these dates.")
+        added = live[(live["type"] == "opening") & (live["date"] > "2026-10-29")]        # typed in through Add Stock after the opening count
+        if p.empty and added.empty: st.info("Nothing was made in these dates.")
         if not p.empty:
             p["time"] = p["ts"].str[11:16]
-            st.metric("Total made", L.fmt(p["qty"].sum()) + " (all units)")
-            by = st.radio("Group by", ["name", "date", "machine", "shift", "user"], horizontal=True, key="rp_by",
-                          format_func=lambda x: {"name": "Item", "date": "Day", "machine": "Machine", "shift": "Shift", "user": "Person"}[x])
-            g = p.assign(**{by: p[by].replace("", "(not noted)")}).groupby([by, "unit"], as_index=False)["qty"].sum().rename(columns={"qty": "Made"}); st.dataframe(g, hide_index=True, **WIDE)
-            st.markdown("**Every production entry**")
-            full = p[["date", "time", "shift", "machine", "category", "brand", "name", "unit", "qty", "user", "note"]].rename(columns={"qty": "made"}).sort_values(["date", "time"], ascending=False)
-            st.dataframe(full, hide_index=True, **WIDE)
+            c1, c2, c3 = st.columns(3); c1.metric("Entries", len(p)); c2.metric("Different items", p["item_id"].nunique()); c3.metric("Made", units_line(p))
+            by = st.selectbox("Show totals by", ["name", "date", "machine", "shift", "user"], key="rp_by", format_func=lambda x: {"name": "Item", "date": "Day", "machine": "Machine", "shift": "Shift", "user": "Person"}[x])
+            g = p.assign(**{by: p[by].replace("", "(not noted)")}).groupby([by, "unit"], as_index=False)["qty"].sum().rename(columns={"qty": "Made"}).sort_values("Made", ascending=False)
+            st.dataframe(g.rename(columns={by: {"name": "Item", "date": "Day", "machine": "Machine", "shift": "Shift", "user": "Person"}[by], "unit": "Unit"}), hide_index=True, column_config={"Made": st.column_config.NumberColumn(format="%g")}, **WIDE)
+            full = p[["date", "time", "shift", "machine", "brand", "name", "unit", "qty", "user", "note"]].rename(columns={"qty": "made"}).sort_values(["date", "time"], ascending=False)
+            with st.expander("Every production entry (%d)" % len(full)):
+                st.dataframe(full, hide_index=True, **WIDE)
             st.download_button("Download CSV", full.to_csv(index=False), "production.csv", "text/csv")
         if not added.empty:
-            st.markdown("**Stock added directly (Add Stock), not entered as production**")
             ad = added.assign(time=added["ts"].str[11:16])[["date", "time", "category", "brand", "name", "unit", "qty", "user", "note"]].rename(columns={"qty": "added"}).sort_values(["date", "time"], ascending=False)
-            st.dataframe(ad, hide_index=True, **WIDE)
-    with t2:
+            with st.expander("Stock added directly with Add Stock, not as production (%d)" % len(ad)):
+                st.dataframe(ad, hide_index=True, **WIDE)
+
+    with t_sent:
+        live = base[(base["date"] >= str(d1)) & (base["date"] <= str(d2))]
         p = live[live["type"] == "dispatch"].copy(); p["qty"] = -p["qty"]
-        if p.empty: st.caption("No dispatch in these dates.")
+        if p.empty: st.info("Nothing was sent in these dates.")
         else:
-            by = st.radio("Group by", ["vehicle", "party", "name"], horizontal=True, format_func=lambda x: {"vehicle": "Vehicle", "party": "Customer", "name": "Item"}[x])
-            g = p.groupby([by, "unit"], as_index=False)["qty"].sum().rename(columns={"qty": "Sent"}); st.dataframe(g, hide_index=True, **WIDE)
+            c1, c2, c3 = st.columns(3); c1.metric("Loads", p["ref"].nunique() if "ref" in p else len(p)); c2.metric("Vehicles", p[p["vehicle"] != ""]["vehicle"].nunique()); c3.metric("Sent", units_line(p))
+            by = st.selectbox("Show totals by", ["party", "vehicle", "name", "date"], key="rd_by", format_func=lambda x: {"party": "Customer", "vehicle": "Vehicle", "name": "Item", "date": "Day"}[x])
+            g = p.assign(**{by: p[by].replace("", "(not noted)")}).groupby([by, "unit"], as_index=False)["qty"].sum().rename(columns={"qty": "Sent"}).sort_values("Sent", ascending=False)
+            st.dataframe(g.rename(columns={by: {"party": "Customer", "vehicle": "Vehicle", "name": "Item", "date": "Day"}[by], "unit": "Unit"}), hide_index=True, column_config={"Sent": st.column_config.NumberColumn(format="%g")}, **WIDE)
             full = p.assign(time=p["ts"].str[11:16])[["date", "time", "vehicle", "party", "brand", "name", "unit", "qty", "user"]].rename(columns={"qty": "sent"}).sort_values(["date", "time"], ascending=False)
-            st.markdown("**Every dispatch entry**"); st.dataframe(full, hide_index=True, **WIDE)
+            with st.expander("Every dispatch entry (%d)" % len(full)):
+                st.dataframe(full, hide_index=True, **WIDE)
             st.download_button("Download full list (CSV)", full.to_csv(index=False), "dispatch.csv", "text/csv")
-    with t3:
-        low = tab[(tab["min_level"] > 0) & (tab["good"] < tab["min_level"])][["category", "brand", "name", "unit", "good", "min_level"]]
-        if low.empty: st.caption("Nothing below its minimum (set minimums in Admin → Items).")
-        else: st.dataframe(low.rename(columns={"good": "In stock", "min_level": "Minimum"}), hide_index=True, **WIDE)
-    with t5:
-        p = live[live["type"] == "inward"]
-        if p.empty: st.caption("No inward entries in these dates.")
+
+    with t_in:
+        p = base[(base["type"] == "inward") & (base["date"] >= str(d1)) & (base["date"] <= str(d2))]
+        if p.empty: st.info("Nothing was received in these dates.")
         else:
+            st.metric("Received", units_line(p))
             full = p[["date", "category", "brand", "name", "unit", "qty", "user"]].rename(columns={"qty": "received"})
             st.dataframe(full, hide_index=True, **WIDE); st.download_button("Download inward list (CSV)", full.to_csv(index=False), "inward.csv", "text/csv")
-    with t4:
-        if IS_ADMIN:
-            g = tab.groupby("category", as_index=False).agg(Value=("value", "sum")); g["Value"] = g["Value"].round(0)
-            st.metric("Total stock value", L.money(tab["value"].sum()))
-            st.dataframe(g.rename(columns={"category": "Category"}), hide_index=True, **WIDE, column_config={"Value": st.column_config.NumberColumn(format="₹%d")})
-            st.download_button("Download stock sheet (CSV)", tab[["category", "brand", "name", "unit", "good", "hold", "price", "value"]].to_csv(index=False), "stock.csv", "text/csv")
+
+    with t_low:
+        low = tab[(tab["min_level"] > 0) & (tab["good"] < tab["min_level"])][["category", "brand", "name", "unit", "good", "min_level"]]
+        if low.empty: st.success("Nothing is below its minimum. (Set minimums in Admin → Items.)")
         else:
-            st.download_button("Download stock sheet (CSV)", tab[["category", "brand", "name", "unit", "good", "hold"]].to_csv(index=False), "stock.csv", "text/csv")
+            st.warning("%d items are below their minimum." % len(low))
+            st.dataframe(low.rename(columns={"good": "In stock", "min_level": "Minimum"}), hide_index=True, **WIDE)
+
+    with t_hist: item_history(items, moves)
 
 
 def screen_admin():
