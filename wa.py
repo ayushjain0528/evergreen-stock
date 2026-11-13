@@ -4,7 +4,7 @@ import re, hashlib
 
 IGNORE = re.compile(r"(loading|delivery|edited|deleted|omitted|attached|image|video|sticker|drip dispatch|^dispatch\b|production details|good morning|^note)", re.I)
 UNIT = r"(?:rolls?|roll|bags?|bag|boxes|box|pcs|pieces|piece|nos|bundles?|sets?|kg)"
-QTY_END = re.compile(r"[-–:=]\s*(\d+(?:\.\d+)?)\s*(" + UNIT + r")?\s*\.?\s*$", re.I)
+QTY_END = re.compile(r"(?:[-\u2010-\u2015\u2212:=xX*]\s*(\d+(?:\.\d+)?)\s*(" + UNIT + r")?|\s(\d+(?:\.\d+)?)\s*(" + UNIT + r"))\s*\.?\s*$", re.I)
 PHONE = re.compile(r"^\s*(?:\+?91[\s-]*)?\d{10}\s*$")
 VEHICLE = re.compile(r"\bK\s*A\s*[-\s]?\s*(\d{1,2})\s*[-\s]?\s*([A-Z]{1,3})\s*[-\s]?\s*(\d{3,4})\b", re.I)
 WA_HEAD = re.compile(r"^‎?\[\d{1,2}/\d{1,2}/\d{2,4},[^\]]*\]\s*[^:]*:\s*")
@@ -41,9 +41,15 @@ def split_qty(line):
     """'16R nisi 300mtrs 10kg 40cm -112rolls' -> ('16R nisi 300mtrs 10kg 40cm', 112.0, 'rolls') or None"""
     m = QTY_END.search(line)
     if not m: return None
-    desc = line[:m.start()].strip(" -–:=")
+    desc = line[:m.start()].strip(" -\u2010\u2011\u2012\u2013\u2014\u2015\u2212:=")
     if not desc: return None
-    return desc, float(m.group(1)), (m.group(2) or "").lower()
+    num = m.group(1) or m.group(3); un = m.group(2) or m.group(4) or ""
+    return desc, float(num), un.lower()
+
+
+def looks_like_item(line):
+    f = feats(line)
+    return sum(1 for k in ("mil", "mtr", "kg", "cm", "type", "dia") if k in f) >= 2 and not PHONE.match(line)
 
 
 def parse_production(text):
@@ -57,6 +63,7 @@ def parse_production(text):
         if not ln or IGNORE.search(ln) or re.match(r"^(date|shift)\b", ln, re.I): continue
         s = split_qty(ln)
         if s: out.append(dict(text=s[0], qty=s[1], unit=s[2]))
+        elif looks_like_item(ln): out.append(dict(text=ln, qty=0.0, unit="", missing=True))
     return dict(kind="production", date=date, shift=shift, lines=out)
 
 
@@ -76,6 +83,7 @@ def parse_dispatch(text):
         if PHONE.match(ln): continue
         if re.match(r"^\d{1,2}[./-]\d{1,2}[./-]\d{2,4}\s*$", ln): continue
         s = split_qty(ln)
+        if not s and looks_like_item(ln): s = (ln, 0.0, "")
         if s:
             desc, q, u = s
             # a short line like "20cm" or "40cm 7kg" after a heading such as "8mil :" belongs to that heading
@@ -172,6 +180,13 @@ def match(line, items, n=4):
     need = sum(w for k, w in dict(mil=6, dia=3, type=5, mtr=4, kg=4, cm=3).items() if k in lf)
     sure = best[0] >= 0.75 * need and best[0] - second >= 2.5 and best[0] > 4
     return best[1], sc, sure
+
+
+def brand_of(party):
+    t = " " + (party or "").lower() + " "
+    for k, v in BRANDS:
+        if k in t and v not in ("platinum", "nandi", "rishab"): return v
+    return ""
 
 
 def trip_key(date, vehicle, groups):

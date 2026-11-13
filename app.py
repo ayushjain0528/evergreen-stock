@@ -9,7 +9,7 @@ import importlib
 import logic as L
 import wa
 import store as _store
-RELEASE = "2026-11-13-g"        # change on every release; it makes the app reload its own parts after an update
+RELEASE = "2026-11-13-h"        # change on every release; it makes the app reload its own parts after an update
 if getattr(L, "LOGIC_VERSION", None) != RELEASE:
     importlib.reload(_store); importlib.reload(L)
 from store import Store, LocalBackend, SheetsBackend, today, new_id, SCHEMA
@@ -922,10 +922,10 @@ def wa_review(parsed, tag):
         if kind == "dispatch": party = st.text_input("Customer / place", value=g["party"], key="%s_p%d" % (tag, gi))
         lines = []
         for li, l in enumerate(g["lines"]):
-            best, cands, sure = wa.match(l["text"], recs)
+            best, cands, sure = wa.match(l["text"] + ((" (%s)" % wa.brand_of(g["party"])) if kind == "dispatch" and wa.brand_of(g["party"]) and wa.brand_of(g["party"]) not in l["text"].lower() else ""), recs)
             k = "%s_%d_%d" % (tag, gi, li)
             with st.container(border=True) if NEW else st.container():
-                st.markdown("**%s** — %s" % ("\u2705" if sure else "\u26a0\ufe0f check this", l["text"]))
+                st.markdown("**%s** — %s" % ("\u2705" if sure else "\u26a0\ufe0f check this", l["text"]) + ("  \u2014 **no quantity found, type it below**" if l["qty"] <= 0 else ""))
                 a, b, c = st.columns([1, 2, 6])
                 inc = a.checkbox("Use", value=True, key=k + "_u")
                 q = b.number_input("Qty", min_value=0.0, value=float(l["qty"]), step=1.0, format="%g", key=k + "_q", label_visibility="collapsed")
