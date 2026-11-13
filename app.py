@@ -9,7 +9,7 @@ import importlib
 import logic as L
 import wa
 import store as _store
-RELEASE = "2026-11-13-e"        # change on every release; it makes the app reload its own parts after an update
+RELEASE = "2026-11-13-f"        # change on every release; it makes the app reload its own parts after an update
 if getattr(L, "LOGIC_VERSION", None) != RELEASE:
     importlib.reload(_store); importlib.reload(L)
 from store import Store, LocalBackend, SheetsBackend, today, new_id, SCHEMA
@@ -586,7 +586,7 @@ def screen_reports():
     items, moves, tab = load()
     st.subheader("Reports")
     st.caption("Period for Made, Sent and Received:"); d1, d2 = report_period()
-    t_stock, t_made, t_sent, t_in, t_low, t_hist, t_week, t_cust = st.tabs(["Stock now", "Made", "Sent", "Received", "Low stock", "Item history", "Weekly list", "Customers"])
+    t_stock, t_made, t_sent, t_in, t_low, t_hist, t_week, t_cust, t_veh = st.tabs(["Stock now", "Made", "Sent", "Received", "Low stock", "Item history", "Weekly list", "Customers", "Vehicles"])
     base = moves[~moves["void"]].merge(items[["id", "name", "brand", "category", "unit", "price"]], left_on="item_id", right_on="id", how="left")
     QTY = {"qty": st.column_config.NumberColumn("Qty", format="%g")}
 
@@ -685,6 +685,17 @@ def screen_reports():
             st.markdown("**Every dispatch**")
             st.dataframe(hh, hide_index=True, **WIDE, column_config={"Qty": st.column_config.NumberColumn("Qty", format="%g")})
             st.download_button("Download (CSV)", hh.to_csv(index=False).encode(), "customer-history.csv", "text/csv", key="cu_dl")
+
+    with t_veh:
+        st.caption("For the transporter: which vehicle went on which day and how many customers it carried. No items here.")
+        vq = st.text_input("Vehicle number (part of it is enough, e.g. 2801; empty shows all)", key="vh_q")
+        vd = L.vehicle_days(S.rows("Moves"), vq, str(d1), str(d2))
+        if vd.empty: st.info("No dispatch by this vehicle in the period chosen at the top.")
+        else:
+            c1, c2, c3 = st.columns(3); c1.metric("Vehicle-days", len(vd)); c2.metric("Vehicles", vd["Vehicle"].nunique()); c3.metric("Customers carried", int(vd["Customers"].sum()))
+            st.dataframe(vd, hide_index=True, **WIDE)
+            st.caption("'Slips' is how many separate dispatch entries were saved that day. Entries made one customer at a time (the old way) show more than one slip even when the vehicle went once. Count the day, not the slips.")
+            st.download_button("Download (CSV)", vd.to_csv(index=False).encode(), "vehicle-days.csv", "text/csv", key="vh_dl")
 
 
 def screen_admin():

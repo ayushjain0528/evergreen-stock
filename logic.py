@@ -4,7 +4,7 @@ import pandas as pd
 from store import SCHEMA, new_id, stamp, today, hash_pin, check_hash, token_hash, new_token, now
 from datetime import timedelta
 
-LOGIC_VERSION = "2026-11-13-e"
+LOGIC_VERSION = "2026-11-13-f"
 BUCKETS = ["good", "hold", "bgrade", "recycle", "scrap"]
 BUCKET_NAME = {"good": "Good stock", "hold": "On hold (returns)", "bgrade": "B-grade", "recycle": "To recycle", "scrap": "Scrap"}
 ROLES = ["admin", "supervisor", "operator", "loader", "sales"]
@@ -448,6 +448,18 @@ def customer_history(items_rows, moves_rows, text, d1, d2):
         it = items.loc[m["item_id"]] if m["item_id"] in items.index else None
         out.append(dict(Date=m["date"], Customer=p or "(no customer named)", Vehicle=m["vehicle"], Item=(it["brand"] + " | " + it["name"]) if it is not None else m["item_id"], Qty=abs(f(m["qty"])), Unit=it["unit"] if it is not None else ""))
     return pd.DataFrame(out, columns=["Date", "Customer", "Vehicle", "Item", "Qty", "Unit"]).sort_values(["Customer", "Date"], ascending=[True, False]) if out else pd.DataFrame(columns=["Date", "Customer", "Vehicle", "Item", "Qty", "Unit"])
+
+def vehicle_days(moves_rows, text, d1, d2):
+    """For each vehicle and date it dispatched: how many customers it carried and who. (No items; those are in the customer view.)"""
+    t = "".join((text or "").upper().split()); g = {}
+    for m in moves_rows:
+        if m["type"] != "dispatch" or str(m["void"]) in ("1", "True", "true", "1.0") or m["bucket"] != "good" or not (d1 <= m["date"] <= d2): continue
+        v = "".join(str(m["vehicle"]).upper().split())
+        if t and t not in v: continue
+        e = g.setdefault((v, m["date"]), dict(parties={}, slips=set()))
+        p = " ".join(str(m["party"]).split()) or "(no customer named)"; e["parties"].setdefault(p.lower(), p); e["slips"].add(trip_of(m["ref"]))
+    rows = [dict(Date=d, Vehicle=v, Customers=len(e["parties"]), Names=", ".join(sorted(e["parties"].values())), Slips=len(e["slips"])) for (v, d), e in g.items()]
+    return pd.DataFrame(rows, columns=["Date", "Vehicle", "Customers", "Names", "Slips"]).sort_values(["Vehicle", "Date"], ascending=[True, False]) if rows else pd.DataFrame(columns=["Date", "Vehicle", "Customers", "Names", "Slips"])
 
 def add_list(store, kind, name):
     name = name.strip()
