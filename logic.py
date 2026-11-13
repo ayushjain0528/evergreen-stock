@@ -4,13 +4,13 @@ import pandas as pd
 from store import SCHEMA, new_id, stamp, today, hash_pin, check_hash, token_hash, new_token, now
 from datetime import timedelta
 
-LOGIC_VERSION = "2026-11-13-c"
+LOGIC_VERSION = "2026-11-13-d"
 BUCKETS = ["good", "hold", "bgrade", "recycle", "scrap"]
 BUCKET_NAME = {"good": "Good stock", "hold": "On hold (returns)", "bgrade": "B-grade", "recycle": "To recycle", "scrap": "Scrap"}
 ROLES = ["admin", "supervisor", "operator", "loader", "sales"]
 NAV = {
-    "admin":      ["Stock", "Inward", "Add Stock", "Production", "Dispatch", "Orders", "Returns", "Raw & Waste", "Count", "Reports", "Fix entries", "Admin"],
-    "supervisor": ["Stock", "Inward", "Add Stock", "Production", "Dispatch", "Orders", "Returns", "Raw & Waste", "Count", "Reports", "Fix entries"],
+    "admin":      ["Stock", "Inward", "Add Stock", "Production", "Dispatch", "WhatsApp", "Orders", "Returns", "Raw & Waste", "Count", "Reports", "Fix entries", "Admin"],
+    "supervisor": ["Stock", "Inward", "Add Stock", "Production", "Dispatch", "WhatsApp", "Orders", "Returns", "Raw & Waste", "Count", "Reports", "Fix entries"],
     "operator":   ["Stock", "Inward", "Add Stock", "Production", "Raw & Waste", "Count"],
     "loader":     ["Stock", "Inward", "Dispatch", "Returns"],
     "sales":      ["Stock", "Orders", "Returns"],
@@ -420,6 +420,34 @@ def edit_item(store, user, item_id, category=None, brand=None, item=None, spec=N
     n["kind"] = "raw" if str(n["category"]).lower().startswith("raw") else "finished"
     store.update("Items", o["_r"], n)
     return "; ".join(ch)
+
+# ---------- weekly list for the factory, and customer history ----------
+def weekly_list(items_rows, moves_rows, start, end):
+    """Per item: opening, made, received, sent, other changes, closing, for start..end (dates 'YYYY-MM-DD'). Good stock only."""
+    items = items_df(items_rows, False); mv = moves_df(moves_rows); mv = mv[(~mv["void"]) & (mv["bucket"] == "good")]
+    def s(mask): return mv[mask].groupby("item_id")["qty"].sum()
+    before = s(mv["date"] < start); within = (mv["date"] >= start) & (mv["date"] <= end)
+    made = s(within & (mv["type"] == "production")); recv = s(within & (mv["type"] == "inward"))
+    sent = -s(within & (mv["type"] == "dispatch")); other = s(within & ~mv["type"].isin(["production", "inward", "dispatch"]))
+    upto = s(mv["date"] <= end)
+    rows = []
+    for _, it in items.iterrows():
+        i = it["id"]; v = [float(x.get(i, 0.0)) for x in (before, made, recv, sent, other, upto)]
+        if not any(abs(x) > 1e-9 for x in v): continue
+        rows.append(dict(Category=it["category"], Brand=it["brand"], Item=it["name"], Unit=it["unit"], Opening=v[0], Made=v[1], Received=v[2], Sent=v[3], Other=v[4], Closing=v[5]))
+    return pd.DataFrame(rows, columns=["Category", "Brand", "Item", "Unit", "Opening", "Made", "Received", "Sent", "Other", "Closing"])
+
+def customer_history(items_rows, moves_rows, text, d1, d2):
+    """Dispatch lines for customers whose name contains `text` (all customers if empty), between d1 and d2."""
+    items = items_df(items_rows, False).set_index("id")
+    t = " ".join((text or "").lower().split()); out = []
+    for m in moves_rows:
+        if m["type"] != "dispatch" or str(m["void"]) in ("1", "True", "true", "1.0") or m["bucket"] != "good" or not (d1 <= m["date"] <= d2): continue
+        p = " ".join(str(m["party"]).split())
+        if t and t not in p.lower(): continue
+        it = items.loc[m["item_id"]] if m["item_id"] in items.index else None
+        out.append(dict(Date=m["date"], Customer=p or "(no customer named)", Vehicle=m["vehicle"], Item=(it["brand"] + " | " + it["name"]) if it is not None else m["item_id"], Qty=abs(f(m["qty"])), Unit=it["unit"] if it is not None else ""))
+    return pd.DataFrame(out, columns=["Date", "Customer", "Vehicle", "Item", "Qty", "Unit"]).sort_values(["Customer", "Date"], ascending=[True, False]) if out else pd.DataFrame(columns=["Date", "Customer", "Vehicle", "Item", "Qty", "Unit"])
 
 def add_list(store, kind, name):
     name = name.strip()

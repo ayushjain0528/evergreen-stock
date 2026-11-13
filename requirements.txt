@@ -3,3 +3,4 @@ pandas
 google-auth
 requests
 reportlab
+openpyxl

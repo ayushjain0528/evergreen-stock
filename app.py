@@ -1,5 +1,5 @@
 """Evergreen Stock - one app for stock, production, dispatch, orders, returns, raw material and reports."""
-import io, os, time, zipfile
+import io, os, time, zipfile, hashlib
 from datetime import date, timedelta
 import pandas as pd
 import streamlit as st
@@ -7,8 +7,9 @@ import streamlit.components.v1 as components
 
 import importlib
 import logic as L
+import wa
 import store as _store
-RELEASE = "2026-11-13-c"        # change on every release; it makes the app reload its own parts after an update
+RELEASE = "2026-11-13-d"        # change on every release; it makes the app reload its own parts after an update
 if getattr(L, "LOGIC_VERSION", None) != RELEASE:
     importlib.reload(_store); importlib.reload(L)
 from store import Store, LocalBackend, SheetsBackend, today, new_id, SCHEMA
@@ -585,7 +586,7 @@ def screen_reports():
     items, moves, tab = load()
     st.subheader("Reports")
     st.caption("Period for Made, Sent and Received:"); d1, d2 = report_period()
-    t_stock, t_made, t_sent, t_in, t_low, t_hist = st.tabs(["Stock now", "Made", "Sent", "Received", "Low stock", "Item history"])
+    t_stock, t_made, t_sent, t_in, t_low, t_hist, t_week, t_cust = st.tabs(["Stock now", "Made", "Sent", "Received", "Low stock", "Item history", "Weekly list", "Customers"])
     base = moves[~moves["void"]].merge(items[["id", "name", "brand", "category", "unit", "price"]], left_on="item_id", right_on="id", how="left")
     QTY = {"qty": st.column_config.NumberColumn("Qty", format="%g")}
 
@@ -653,6 +654,37 @@ def screen_reports():
             st.dataframe(low.rename(columns={"good": "In stock", "min_level": "Minimum"}), hide_index=True, **WIDE)
 
     with t_hist: item_history(items, moves)
+
+    with t_week:
+        st.caption("One list for the factory to confirm: what each item had at the start, what was made, received and sent, and the stock at the end. Print it or download it; the last two columns are empty for the factory to fill.")
+        tt = date.today(); mon = tt - timedelta(days=tt.weekday())
+        c1, c2 = st.columns(2); w1 = c1.date_input("From", value=mon - timedelta(days=7), key="wk_1"); w2 = c2.date_input("To", value=mon - timedelta(days=1), key="wk_2")
+        st.caption("Default is last week, Monday to Sunday.")
+        wl = L.weekly_list(S.rows("Items"), S.rows("Moves"), str(w1), str(w2))
+        if wl.empty: st.info("Nothing moved in these dates.")
+        else:
+            c1, c2, c3 = st.columns(3); c1.metric("Items", len(wl)); c2.metric("Made", L.fmt(wl["Made"].sum())); c3.metric("Sent", L.fmt(wl["Sent"].sum()))
+            st.dataframe(wl, hide_index=True, **WIDE, column_config={c: st.column_config.NumberColumn(c, format="%g") for c in ["Opening", "Made", "Received", "Sent", "Other", "Closing"]})
+            ex = wl.copy(); ex["Factory count"] = ""; ex["Difference"] = ""
+            try:
+                buf = io.BytesIO(); ex.to_excel(buf, index=False, sheet_name="Weekly list"); st.download_button("Download (Excel)", buf.getvalue(), "weekly-list-%s-to-%s.xlsx" % (w1, w2), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="wk_x")
+            except Exception:
+                st.download_button("Download (CSV)", ex.to_csv(index=False).encode(), "weekly-list-%s-to-%s.csv" % (w1, w2), "text/csv", key="wk_c")
+
+    with t_cust:
+        q = st.text_input("Customer name (part of it is enough; empty shows everyone)", key="cu_q")
+        h = L.customer_history(S.rows("Items"), S.rows("Moves"), q, str(d1), str(d2))
+        if h.empty: st.info("No dispatch to this customer in the period above.")
+        else:
+            names_ = sorted(h["Customer"].unique()); st.caption("%d customer(s), %d lines, in the period chosen at the top." % (len(names_), len(h)))
+            sel = st.multiselect("Show these customers", names_, default=names_[:1] if q.strip() and len(names_) > 1 else names_, key="cu_sel") if len(names_) > 1 else names_
+            hh = h[h["Customer"].isin(sel)] if sel else h
+            st.markdown("**Total sent, by item**")
+            tot = hh.groupby(["Customer", "Item", "Unit"], as_index=False)["Qty"].sum()
+            st.dataframe(tot, hide_index=True, **WIDE, column_config={"Qty": st.column_config.NumberColumn("Qty", format="%g")})
+            st.markdown("**Every dispatch**")
+            st.dataframe(hh, hide_index=True, **WIDE, column_config={"Qty": st.column_config.NumberColumn("Qty", format="%g")})
+            st.download_button("Download (CSV)", hh.to_csv(index=False).encode(), "customer-history.csv", "text/csv", key="cu_dl")
 
 
 def screen_admin():
@@ -843,7 +875,104 @@ def screen_fix():
     st.caption("Note: fixing a dispatch does not change the orders it ticked off. A return needs to be entered on the Returns screen.")
 
 
-SCREENS = {"Stock": screen_stock, "Inward": screen_inward, "Add Stock": screen_addstock, "Production": screen_production, "Dispatch": screen_dispatch, "Orders": screen_orders, "Returns": screen_returns,
+def wa_review(parsed, tag):
+    """Show what was read, one line at a time, for the person to check and correct. Saves only when the button is pressed."""
+    items, _, tab = load()
+    recs = items[items["kind"] == "finished"].to_dict("records"); ids = [r["id"] for r in recs]
+    nm = {r["id"]: "%s | %s" % (r["brand"], r["name"]) for r in recs}; good = tab.set_index("id")["good"].to_dict()
+    kind = parsed["kind"]; today_ = date.today()
+    def pdate(s):
+        try: d = date.fromisoformat(s)
+        except Exception: d = today_
+        return min(d, today_)
+    c1, c2 = st.columns(2)
+    dt = c1.date_input("Date", value=pdate(parsed.get("date", "")), max_value=today_, key=tag + "_dt")
+    shift = vehicle = ""
+    if kind == "production": shift = c2.selectbox("Shift", ["", "A", "B"], index=["", "A", "B"].index(parsed.get("shift", "")) if parsed.get("shift", "") in ("", "A", "B") else 0, key=tag + "_sh")
+    else: vehicle = c2.text_input("Vehicle", value=parsed.get("vehicle", ""), key=tag + "_veh")
+    groups = parsed["groups"] if kind == "dispatch" else [dict(party="", lines=parsed["lines"])]
+    have = {m["ref"] for m in S.rows("Moves")} if kind == "production" else set()
+    out = []; needs = 0
+    for gi, g in enumerate(groups):
+        party = g["party"]
+        if kind == "dispatch": party = st.text_input("Customer / place", value=g["party"], key="%s_p%d" % (tag, gi))
+        lines = []
+        for li, l in enumerate(g["lines"]):
+            best, cands, sure = wa.match(l["text"], recs)
+            k = "%s_%d_%d" % (tag, gi, li)
+            with st.container(border=True) if NEW else st.container():
+                st.markdown("**%s** — %s" % ("\u2705" if sure else "\u26a0\ufe0f check this", l["text"]))
+                a, b, c = st.columns([1, 2, 6])
+                inc = a.checkbox("Use", value=True, key=k + "_u")
+                q = b.number_input("Qty", min_value=0.0, value=float(l["qty"]), step=1.0, format="%g", key=k + "_q", label_visibility="collapsed")
+                it = c.selectbox("Item", ids, index=ids.index(best["id"]) if (sure and best["id"] in ids) else None, placeholder="Choose the item", format_func=lambda i: nm.get(i, i), key=k + "_i", label_visibility="collapsed")
+                if not sure: st.caption("Closest: " + " · ".join(nm[x["id"]] for _, x in cands[:3] if x["id"] in nm))
+                if it: st.caption("Stock now: %s %s" % (L.fmt(good.get(it, 0)), next((r["unit"] for r in recs if r["id"] == it), "")))
+                if kind == "production" and it and "wa-%s-%s-%s" % (dt, shift or "x", it) in have: st.warning("This item already has a WhatsApp production entry for this date and shift. It will not be added again.")
+            if inc:
+                if not it or q <= 0: needs += 1
+                else: lines.append((it, float(q)))
+        out.append((party, lines))
+    if needs: st.warning("%d line(s) still need an item and quantity. Pick the item, or untick 'Use' to skip the line." % needs)
+    if kind == "production":
+        merged = {}
+        for _, ls in out:
+            for i, q in ls: merged[i] = merged.get(i, 0.0) + q
+        if st.button("\u2705 Save %d production line(s)" % len(merged), type="primary", key=tag + "_save", disabled=bool(needs) or not merged):
+            try:
+                for i, q in merged.items():
+                    L.add_production(S, ME, i, q, str(dt), shift, "", "From WhatsApp", "wa-%s-%s-%s" % (dt, shift or "x", i))
+                act("wa_production", "%d lines %s %s" % (len(merged), dt, shift)); st.success("Saved %d production line(s) for %s shift %s." % (len(merged), dt, shift or "-"))
+            except L.Problem as e: st.error(str(e))
+            except Exception as e: st.error("Could not save. (%s)" % str(e)[:160])
+    else:
+        drops = [(p, ls) for p, ls in out if ls]
+        neg = st.checkbox("Allow sending more than stock (admin only)", key=tag + "_neg") if IS_ADMIN else False
+        if st.button("\u2705 Save this dispatch (%d customer(s))" % len(drops), type="primary", key=tag + "_save", disabled=bool(needs) or not drops):
+            trip = wa.trip_key(str(dt), vehicle, [dict(party=p, lines=[dict(item=i, qty=q) for i, q in ls]) for p, ls in drops])
+            if any(m["ref"] == trip + ".0" for m in S.rows("Moves")): st.warning("This exact dispatch is already saved.")
+            else:
+              try:
+                L.add_dispatch_trip(S, ME, drops, vehicle, str(dt), "From WhatsApp", neg, trip)
+                act("wa_dispatch", "%d customers %s" % (len(drops), dt)); st.success("Dispatch saved."); st.session_state["last_slip"] = trip + ".0"; slip_button(trip + ".0", "Download vehicle slip (PDF)", tag + "_slip")
+              except L.Problem as e: st.error(str(e))
+              except Exception as e: st.error("Could not save. (%s)" % str(e)[:160])
+
+
+def screen_wa():
+    st.subheader("From WhatsApp")
+    st.caption("Paste a production or dispatch message, or upload a photo of a dispatch slip. The app shows what it understood, line by line. Nothing is saved until you check it and press Save.")
+    t1, t2 = st.tabs(["Paste a message", "From a photo"])
+    with t1:
+        txt = st.text_area("Paste the message here", height=200, key="wa_txt", placeholder="Production details\nDate- 12/11/26\nShift-B\n\n8mil 7.3kg 20cm 800mtrs(evg) -06rolls ...")
+        if txt.strip():
+            kind = st.radio("This is a", ["Production", "Dispatch"], index=0 if wa.guess_kind(txt) == "production" else 1, horizontal=True, key="wa_kind")
+            parsed = wa.parse_production(txt) if kind == "Production" else wa.parse_dispatch(txt)
+            n = len(parsed["lines"]) if kind == "Production" else sum(len(g["lines"]) for g in parsed["groups"])
+            if not n: st.error("I could not find any lines. Each line should end with a quantity, like '16R nisi 300mtrs 10kg 40cm -112rolls'.")
+            else: wa_review(parsed, "wp" + hashlib.md5((kind + txt).encode()).hexdigest()[:6])
+    with t2:
+        key = os.environ.get("ANTHROPIC_API_KEY", "")
+        if not key and any(os.path.exists(os.path.join(d, "secrets.toml")) for d in (os.path.join(os.path.dirname(__file__), ".streamlit"), os.path.expanduser("~/.streamlit"))):
+            try: key = st.secrets.get("ANTHROPIC_API_KEY", "")
+            except Exception: key = ""
+        if not key:
+            st.info("Reading photos needs a key from Anthropic (the company behind Claude). It is not set up yet. To switch it on: get a key at console.anthropic.com, then in Streamlit open Manage app > Settings > Secrets and add the line  ANTHROPIC_API_KEY = \"your key\"  and Save. Each photo costs a small amount (about a rupee or two).")
+        ups = st.file_uploader("Photo(s) of the dispatch slip", type=["jpg", "jpeg", "png"], accept_multiple_files=True, key="wa_ph")
+        if ups and key and st.button("Read the photo", type="primary", key="wa_read"):
+            try:
+                with st.spinner("Reading the photo..."):
+                    st.session_state["wa_ph_res"] = (hashlib.md5(b"".join(u.getvalue()[:2000] for u in ups)).hexdigest()[:6], wa.read_photo([(u.getvalue(), u.type) for u in ups], key))
+                act("wa_photo_read", "%d photo(s)" % len(ups))
+            except Exception as e: st.error("Could not read the photo. (%s)" % str(e)[:200])
+        res = st.session_state.get("wa_ph_res")
+        if res and ups:
+            st.caption("A photo can be misread (handwriting, angle). Check every line against the slip before saving. A line marked with ? was unclear to the reader.")
+            if not res[1]["groups"]: st.error("Nothing could be read. Try a clearer, straight-on photo.")
+            else: wa_review(res[1], "wph" + res[0])
+
+
+SCREENS = {"Stock": screen_stock, "Inward": screen_inward, "Add Stock": screen_addstock, "Production": screen_production, "Dispatch": screen_dispatch, "WhatsApp": screen_wa, "Orders": screen_orders, "Returns": screen_returns,
            "Raw & Waste": screen_raw, "Count": screen_count, "Reports": screen_reports, "Fix entries": screen_fix, "Admin": screen_admin}
 
 st.markdown("### 🌿 Evergreen Stock" + ("" if LIVE else "  ·  TRIAL"))
