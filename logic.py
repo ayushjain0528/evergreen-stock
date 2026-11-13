@@ -4,7 +4,7 @@ import pandas as pd
 from store import SCHEMA, new_id, stamp, today, hash_pin, check_hash, token_hash, new_token, now
 from datetime import timedelta
 
-LOGIC_VERSION = "2026-11-13-f"
+LOGIC_VERSION = "2026-11-13-g"
 BUCKETS = ["good", "hold", "bgrade", "recycle", "scrap"]
 BUCKET_NAME = {"good": "Good stock", "hold": "On hold (returns)", "bgrade": "B-grade", "recycle": "To recycle", "scrap": "Scrap"}
 ROLES = ["admin", "supervisor", "operator", "loader", "sales"]
@@ -347,7 +347,7 @@ def dispatch_load(store, ref):
     return dict(ref=trip, date=m0["date"], vehicle=m0["vehicle"], user=m0["user"], note=m0["note"], drops=list(drops.items()),
                 party=", ".join(p for p in drops if p), lines=[l for v in drops.values() for l in v])
 
-def add_dispatch_trip(store, user, drops, vehicle, date, note="", allow_negative=False, trip=""):
+def add_dispatch_trip(store, user, drops, vehicle, date, note="", allow_negative=False, trip="", trip_no=""):
     """One vehicle, one or more customers. drops = [(party, [(item_id, qty)])]. All saved together or not at all."""
     drops = [(p, ls) for p, ls in drops if ls]
     if not drops: raise Problem("Add at least one item.")
@@ -368,7 +368,7 @@ def add_dispatch_trip(store, user, drops, vehicle, date, note="", allow_negative
     for k, (party, ls) in enumerate(drops):
         agg = {}
         for iid, q in ls: agg[iid] = agg.get(iid, 0.0) + q
-        rows += [_move(i, -q, "good", "dispatch", "%s.%d" % (trip, k), user, date, vehicle=vehicle, party=party.strip(), note=note) for i, q in agg.items()]
+        rows += [_move(i, -q, "good", "dispatch", "%s.%d" % (trip, k), user, date, vehicle=vehicle, party=party.strip(), note=note, shift=str(trip_no or "")) for i, q in agg.items()]
     store.append("Moves", rows)
 
 def add_order(store, user, party, item_id, qty, due, note=""):
@@ -449,17 +449,34 @@ def customer_history(items_rows, moves_rows, text, d1, d2):
         out.append(dict(Date=m["date"], Customer=p or "(no customer named)", Vehicle=m["vehicle"], Item=(it["brand"] + " | " + it["name"]) if it is not None else m["item_id"], Qty=abs(f(m["qty"])), Unit=it["unit"] if it is not None else ""))
     return pd.DataFrame(out, columns=["Date", "Customer", "Vehicle", "Item", "Qty", "Unit"]).sort_values(["Customer", "Date"], ascending=[True, False]) if out else pd.DataFrame(columns=["Date", "Customer", "Vehicle", "Item", "Qty", "Unit"])
 
+def vehicle_trip_nos(moves_rows, vehicle, day):
+    """Trip numbers already saved for this vehicle on this day (a blank counts as trip 1)."""
+    v = "".join(str(vehicle).upper().split())
+    return sorted({str(m["shift"]).strip() or "1" for m in moves_rows if m["type"] == "dispatch" and not (str(m["void"]) in ("1", "True", "true", "1.0")) and m["date"] == day and "".join(str(m["vehicle"]).upper().split()) == v})
+
 def vehicle_days(moves_rows, text, d1, d2):
-    """For each vehicle and date it dispatched: how many customers it carried and who. (No items; those are in the customer view.)"""
+    """For each vehicle and date it dispatched: how many trips (saved trip number, blank = 1), how many customers and who. No items."""
     t = "".join((text or "").upper().split()); g = {}
     for m in moves_rows:
         if m["type"] != "dispatch" or str(m["void"]) in ("1", "True", "true", "1.0") or m["bucket"] != "good" or not (d1 <= m["date"] <= d2): continue
         v = "".join(str(m["vehicle"]).upper().split())
         if t and t not in v: continue
-        e = g.setdefault((v, m["date"]), dict(parties={}, slips=set()))
-        p = " ".join(str(m["party"]).split()) or "(no customer named)"; e["parties"].setdefault(p.lower(), p); e["slips"].add(trip_of(m["ref"]))
-    rows = [dict(Date=d, Vehicle=v, Customers=len(e["parties"]), Names=", ".join(sorted(e["parties"].values())), Slips=len(e["slips"])) for (v, d), e in g.items()]
-    return pd.DataFrame(rows, columns=["Date", "Vehicle", "Customers", "Names", "Slips"]).sort_values(["Vehicle", "Date"], ascending=[True, False]) if rows else pd.DataFrame(columns=["Date", "Vehicle", "Customers", "Names", "Slips"])
+        e = g.setdefault((v, m["date"]), dict(parties={}, trips=set()))
+        p = " ".join(str(m["party"]).split()) or "(no customer named)"; e["parties"].setdefault(p.lower(), p); e["trips"].add(str(m["shift"]).strip() or "1")
+    rows = [dict(Date=d, Vehicle=v, Trips=len(e["trips"]), Customers=len(e["parties"]), Names=", ".join(sorted(e["parties"].values()))) for (v, d), e in g.items()]
+    cols = ["Date", "Vehicle", "Trips", "Customers", "Names"]
+    return pd.DataFrame(rows, columns=cols).sort_values(["Vehicle", "Date"], ascending=[True, False]) if rows else pd.DataFrame(columns=cols)
+
+def vehicle_sheet(moves_rows, upto=None):
+    upto = upto or today(); month = upto[:7]
+    df = vehicle_days(moves_rows, "", month + "-01", month + "-31").sort_values(["Date", "Vehicle"])
+    rows = [["VEHICLE TRIPS " + month, "Updated " + stamp()], ["Date", "Vehicle", "Trips", "Customers", "Customer names"]]
+    rows += [[r["Date"], r["Vehicle"], r["Trips"], r["Customers"], r["Names"]] for _, r in df.iterrows()]
+    rows += [[], ["", "", "", "", ""]]
+    summ = df.groupby("Vehicle").agg(days=("Date", "nunique"), trips=("Trips", "sum"), customers=("Customers", "sum")).reset_index()
+    rows += [["TOTAL FOR THE MONTH", "Vehicle", "Days it went", "Trips", "Customers carried"]]
+    rows += [["", r["Vehicle"], int(r["days"]), int(r["trips"]), int(r["customers"])] for _, r in summ.iterrows()]
+    return "Vehicles %s" % month, rows
 
 def add_list(store, kind, name):
     name = name.strip()
@@ -589,8 +606,10 @@ def sync_register(store):
     try:
         t2, r2 = dispatch_sheet(store.rows("Items"), store.rows("Moves"))
         store.b.replace_tab(t2, r2, header_rows=2)
+        t3, r3 = vehicle_sheet(store.rows("Moves"))
+        store.b.replace_tab(t3, r3, header_rows=2)
     except Exception as e:
-        store.sync_error = "Dispatch sheet: " + str(e)[:150]
+        store.sync_error = "Dispatch / vehicle sheet: " + str(e)[:150]
     return tab
 
 

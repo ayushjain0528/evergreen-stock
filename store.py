@@ -135,6 +135,7 @@ class SheetsBackend:
             n, _, i = t
             if n.startswith("Register "): return (1, n, 0)
             if n.startswith("Dispatch "): return (2, n, 0)
+            if n.startswith("Vehicles "): return (2, "~" + n, 0)
             if n.startswith("Backup"): return (3, n, 0)
             return (0, "", i)
         want = sorted(tabs, key=key)

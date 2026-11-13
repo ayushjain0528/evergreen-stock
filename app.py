@@ -9,7 +9,7 @@ import importlib
 import logic as L
 import wa
 import store as _store
-RELEASE = "2026-11-13-f"        # change on every release; it makes the app reload its own parts after an update
+RELEASE = "2026-11-13-g"        # change on every release; it makes the app reload its own parts after an update
 if getattr(L, "LOGIC_VERSION", None) != RELEASE:
     importlib.reload(_store); importlib.reload(L)
 from store import Store, LocalBackend, SheetsBackend, today, new_id, SCHEMA
@@ -359,6 +359,15 @@ def screen_production():
     recent(["production"])
 
 
+def trip_no_pick(vehicle, day, key):
+    """If this vehicle already has a dispatch saved for the day, ask whether this is the same trip or another one. Returns the trip number to save ('' for trip 1)."""
+    done = L.vehicle_trip_nos(S.rows("Moves"), vehicle or "", day) if (vehicle or "").strip() else []
+    if not done: return ""
+    nxt = str(max(int(x) for x in done if x.isdigit()) + 1) if any(x.isdigit() for x in done) else "2"
+    ch = st.radio("%s already has a dispatch saved on this date (trip %s). This load is:" % (" ".join(vehicle.upper().split()), ", ".join(done)), ["The same trip (more customers)", "Another trip (it came back and went again)"], key=key)
+    return "" if ch.startswith("The same") else nxt
+
+
 def screen_dispatch():
     items, _, tab = load()
     st.subheader("Dispatch")
@@ -395,6 +404,7 @@ def screen_dispatch():
                 a, b = st.columns([4, 1]); a.write("%s %s — %s" % (L.fmt(c[1]), c[3], c[2]))
                 if b.button("✖", key="rm%d" % i): cart.pop(i); st.rerun()
         neg = st.checkbox("Allow sending more than stock (admin only)", value=False) if IS_ADMIN else False
+        tno = trip_no_pick(veh, str(ddate), "d_tno")
         note = st.text_input("Note (optional)", key="d_note")
         ticked = {}
         names = items.set_index("id")["name"].to_dict()
@@ -408,7 +418,7 @@ def screen_dispatch():
         if st.button("✅ Save dispatch", type="primary", key="d_save"):
             trip = nonce("disp")
             drops = [(gp, [(c[0], c[1]) for c in cart if c[4] == gp]) for gp in groups]
-            if run(L.add_dispatch_trip, ME, drops, veh or "", str(ddate), note, neg, trip, ok="Dispatch saved"):
+            if run(L.add_dispatch_trip, ME, drops, veh or "", str(ddate), note, neg, trip, tno, ok="Dispatch saved"):
                 msg = ""; n_ord = 0; n_fin = 0
                 for gp, lines in drops:
                     if not ticked.get(gp): continue
@@ -692,9 +702,9 @@ def screen_reports():
         vd = L.vehicle_days(S.rows("Moves"), vq, str(d1), str(d2))
         if vd.empty: st.info("No dispatch by this vehicle in the period chosen at the top.")
         else:
-            c1, c2, c3 = st.columns(3); c1.metric("Vehicle-days", len(vd)); c2.metric("Vehicles", vd["Vehicle"].nunique()); c3.metric("Customers carried", int(vd["Customers"].sum()))
+            c1, c2, c3 = st.columns(3); c1.metric("Days it went", len(vd)); c2.metric("Trips", int(vd["Trips"].sum())); c3.metric("Customers carried", int(vd["Customers"].sum()))
             st.dataframe(vd, hide_index=True, **WIDE)
-            st.caption("'Slips' is how many separate dispatch entries were saved that day. Entries made one customer at a time (the old way) show more than one slip even when the vehicle went once. Count the day, not the slips.")
+            st.caption("A vehicle counts as 1 trip per day unless a second trip was saved. If it really went twice on a day, open Fix entries and set 'Trip of the day' to 2 on that dispatch.")
             st.download_button("Download (CSV)", vd.to_csv(index=False).encode(), "vehicle-days.csv", "text/csv", key="vh_dl")
 
 
@@ -752,7 +762,7 @@ def screen_admin():
             c1.write(("~~" if gone else "") + "%s · **%s** %s %s · %s · %s" % (m["ts"][5:16], m["type"], L.fmt(m["qty"]), items.get(m["item_id"], "?"), m["bucket"], m["user"]) + ("~~" if gone else ""))
             if not gone and c2.button("Cancel", key="h" + m["id"]): run(L.void_move_group, ME, m["id"], ok="Cancelled"); st.rerun()
     with t5:
-        st.write("**Google Sheet register.** The app keeps a tab called *%s* in your Google Sheet up to date by itself: Opening, In, Out and Closing for every day, in your Excel layout. A new one starts by itself every month. You never type in the Sheet. There is also a tab *%s* with every dispatch of the month (date, slip, vehicle, customer, item, quantity)." % ("Register " + today()[:7], "Dispatch " + today()[:7]))
+        st.write("**Google Sheet register.** The app keeps a tab called *%s* in your Google Sheet up to date by itself: Opening, In, Out and Closing for every day, in your Excel layout. A new one starts by itself every month. You never type in the Sheet. There are also tabs *%s* (every dispatch of the month) and *%s* (which vehicle went each day, how many trips and customers)." % ("Register " + today()[:7], "Dispatch " + today()[:7], "Vehicles " + today()[:7]))
         if S.sync_error: st.warning("Last sheet update failed: " + S.sync_error)
         st.write("**Activity log:** every login, screen opened, save, edit, undo and error is written to a tab called *Log* in the Google Sheet (who, when, what, how long it took). Use it to see what staff do and where things go wrong.")
         if S.log_error: st.warning("Last log write failed: " + S.log_error)
@@ -832,6 +842,9 @@ def screen_fix():
                 party = c3.text_input("Customer / place", value=m["party"], key="fx_p_" + m["id"]) if m["type"] in ("dispatch", "inward") else None
                 veh = c4.text_input("Vehicle", value=m["vehicle"], key="fx_v_" + m["id"]) if m["type"] == "dispatch" else None
                 shift = machine = None
+                if m["type"] == "dispatch":
+                    shift = st.selectbox("Trip of the day (the vehicle's 1st, 2nd... trip)", ["1", "2", "3", "4"], index=(["1", "2", "3", "4"].index(m["shift"]) if m["shift"] in ("1", "2", "3", "4") else 0), key="fx_s_" + m["id"])
+                    shift = "" if shift == "1" else shift
                 if m["type"] == "production":
                     c5, c6 = st.columns(2); shift = c5.selectbox("Shift", ["", "A", "B"], index=["", "A", "B"].index(m["shift"]) if m["shift"] in ("", "A", "B") else 0, key="fx_s_" + m["id"])
                     machine = c6.text_input("Machine", value=m["machine"], key="fx_m_" + m["id"])
@@ -939,12 +952,13 @@ def wa_review(parsed, tag):
     else:
         drops = [(p, ls) for p, ls in out if ls]
         neg = st.checkbox("Allow sending more than stock (admin only)", key=tag + "_neg") if IS_ADMIN else False
+        tno = trip_no_pick(vehicle, str(dt), tag + "_tno")
         if st.button("\u2705 Save this dispatch (%d customer(s))" % len(drops), type="primary", key=tag + "_save", disabled=bool(needs) or not drops):
             trip = wa.trip_key(str(dt), vehicle, [dict(party=p, lines=[dict(item=i, qty=q) for i, q in ls]) for p, ls in drops])
             if any(m["ref"] == trip + ".0" for m in S.rows("Moves")): st.warning("This exact dispatch is already saved.")
             else:
               try:
-                L.add_dispatch_trip(S, ME, drops, vehicle, str(dt), "From WhatsApp", neg, trip)
+                L.add_dispatch_trip(S, ME, drops, vehicle, str(dt), "From WhatsApp", neg, trip, tno)
                 act("wa_dispatch", "%d customers %s" % (len(drops), dt)); st.success("Dispatch saved."); st.session_state["last_slip"] = trip + ".0"; slip_button(trip + ".0", "Download vehicle slip (PDF)", tag + "_slip")
               except L.Problem as e: st.error(str(e))
               except Exception as e: st.error("Could not save. (%s)" % str(e)[:160])
