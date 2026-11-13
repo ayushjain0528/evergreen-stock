@@ -8,7 +8,7 @@ import streamlit.components.v1 as components
 import importlib
 import logic as L
 import store as _store
-RELEASE = "2026-11-13-b"        # change on every release; it makes the app reload its own parts after an update
+RELEASE = "2026-11-13-c"        # change on every release; it makes the app reload its own parts after an update
 if getattr(L, "LOGIC_VERSION", None) != RELEASE:
     importlib.reload(_store); importlib.reload(L)
 from store import Store, LocalBackend, SheetsBackend, today, new_id, SCHEMA
@@ -709,11 +709,11 @@ def screen_admin():
             c1.write(("~~" if gone else "") + "%s · **%s** %s %s · %s · %s" % (m["ts"][5:16], m["type"], L.fmt(m["qty"]), items.get(m["item_id"], "?"), m["bucket"], m["user"]) + ("~~" if gone else ""))
             if not gone and c2.button("Cancel", key="h" + m["id"]): run(L.void_move_group, ME, m["id"], ok="Cancelled"); st.rerun()
     with t5:
-        st.write("**Google Sheet register.** The app keeps a tab called *%s* in your Google Sheet up to date by itself: Opening, In, Out and Closing for every day, in your Excel layout. You never type in the Sheet." % ("Register " + today()[:7]))
+        st.write("**Google Sheet register.** The app keeps a tab called *%s* in your Google Sheet up to date by itself: Opening, In, Out and Closing for every day, in your Excel layout. A new one starts by itself every month. You never type in the Sheet. There is also a tab *%s* with every dispatch of the month (date, slip, vehicle, customer, item, quantity)." % ("Register " + today()[:7], "Dispatch " + today()[:7]))
         if S.sync_error: st.warning("Last sheet update failed: " + S.sync_error)
         st.write("**Activity log:** every login, screen opened, save, edit, undo and error is written to a tab called *Log* in the Google Sheet (who, when, what, how long it took). Use it to see what staff do and where things go wrong.")
         if S.log_error: st.warning("Last log write failed: " + S.log_error)
-        st.write("**Daily backup:** a copy of all your data is saved once a day as a tab called *Backup <date>* in the Google Sheet. The last 7 days are kept. " + ("Today's backup is done." if S.bk_day == today() else "Today's backup is not done yet."))
+        st.write("**Daily backup:** a copy of all your data is saved once a day in ONE tab called *Backup* in the Google Sheet. The same tab is rewritten each day, so no new tabs pile up. " + ("Today's backup is done." if S.bk_day == today() else "Today's backup is not done yet."))
         if S.bk_error: st.warning("Last backup problem: " + S.bk_error)
         if st.button("Back up now"):
             try: L.backup_now(S, today()); S.bk_day = today(); act("backup_now"); st.toast("Backup saved", icon="✅")

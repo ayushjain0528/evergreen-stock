@@ -4,7 +4,7 @@ import pandas as pd
 from store import SCHEMA, new_id, stamp, today, hash_pin, check_hash, token_hash, new_token, now
 from datetime import timedelta
 
-LOGIC_VERSION = "2026-11-13-b"
+LOGIC_VERSION = "2026-11-13-c"
 BUCKETS = ["good", "hold", "bgrade", "recycle", "scrap"]
 BUCKET_NAME = {"good": "Good stock", "hold": "On hold (returns)", "bgrade": "B-grade", "recycle": "To recycle", "scrap": "Scrap"}
 ROLES = ["admin", "supervisor", "operator", "loader", "sales"]
@@ -524,21 +524,45 @@ def register(items_rows, moves_rows, upto=None):
         rows.append(line + cells)
     return "Register %s" % first[:7], rows
 
+def dispatch_sheet(items_rows, moves_rows, upto=None):
+    """Returns (tab_name, rows): every dispatched line of the month, one row each, oldest first, with a total per vehicle trip."""
+    upto = upto or today(); month = upto[:7]
+    items = items_df(items_rows, False).set_index("id")
+    head = ["Date", "Slip no.", "Vehicle", "Customer / place", "Category", "Brand", "Item", "Size / details", "Qty", "Unit", "Entered by", "Note"]
+    out = []
+    for m in moves_rows:
+        if m["type"] != "dispatch" or str(m["void"]) in ("1", "True", "true", "1.0") or m["bucket"] != "good" or not str(m["date"]).startswith(month): continue
+        it = items.loc[m["item_id"]] if m["item_id"] in items.index else None
+        out.append((m["date"], m["ts"], trip_of(m["ref"]), m, it))
+    out.sort(key=lambda x: (x[0], x[1], x[2]))
+    rows = [["DISPATCH " + month, "Updated " + stamp()], head]
+    for d, _, trip, m, it in out:
+        q = abs(f(m["qty"]))
+        rows.append([d, trip[:6].upper(), m["vehicle"], m["party"], it["category"] if it is not None else "", it["brand"] if it is not None else "",
+                     it["item"] if it is not None else m["item_id"], it["spec"] if it is not None else "", q, it["unit"] if it is not None else "", m["user"], m["note"]])
+    rows.append([]); rows.append(["Lines", len(out), "", "", "", "", "", "", "(quantities are not added up here because items use different units)"])
+    return "Dispatch %s" % month, rows
+
 def sync_register(store):
     tab, rows = register(store.rows("Items"), store.rows("Moves"))
     store.b.replace_tab(tab, rows)
+    try:
+        t2, r2 = dispatch_sheet(store.rows("Items"), store.rows("Moves"))
+        store.b.replace_tab(t2, r2, header_rows=2)
+    except Exception as e:
+        store.sync_error = "Dispatch sheet: " + str(e)[:150]
     return tab
 
 
 # ---------- daily backup, today's movement ----------
 def backup_now(store, day):
-    """One tab 'Backup YYYY-MM-DD' holding Items, Moves and Orders as they are now. Keeps the last 7."""
+    """One tab called 'Backup' holding Items, Moves and Orders as they are now. It is rewritten each day, never added to; the old dated Backup tabs are removed."""
     rows = [["BACKUP", day, stamp()], [], ["ITEMS"], SCHEMA["Items"]]
     rows += [[r.get(c, "") for c in SCHEMA["Items"]] for r in store.rows("Items")]
     rows += [[], ["MOVES"], SCHEMA["Moves"]] + [[r.get(c, "") for c in SCHEMA["Moves"]] for r in store.rows("Moves")]
     rows += [[], ["ORDERS"], SCHEMA["Orders"]] + [[r.get(c, "") for c in SCHEMA["Orders"]] for r in store.rows("Orders")]
-    store.b.replace_tab("Backup " + day, rows, header_rows=1)
-    store.b.prune_tabs("Backup ", 7)
+    store.b.replace_tab("Backup", rows, header_rows=1)
+    store.b.prune_tabs("Backup 20", 0)     # the old 'Backup 2026-..' day tabs
 
 def today_movement(items_rows, moves_rows, day=None):
     day = day or today(); items = items_df(items_rows, False).set_index("id"); mv = moves_df(moves_rows)

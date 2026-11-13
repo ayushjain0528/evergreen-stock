@@ -61,7 +61,7 @@ class LocalBackend:
             csv.writer(f).writerows(rows)
     def prune_tabs(self, prefix, keep):
         names = sorted(f for f in os.listdir(self.path) if f.startswith(prefix.replace(" ", "_")))
-        for f in names[:-keep]: os.remove(os.path.join(self.path, f))
+        for f in names[:len(names) - keep]: os.remove(os.path.join(self.path, f))
     def update_row(self, t, r, row):
         cols = SCHEMA[t]
         with self.lock:
@@ -126,7 +126,20 @@ class SheetsBackend:
         meta = self._call("GET", "%s/%s?fields=sheets.properties" % (self.API, self.sid))
         old = sorted((x["properties"]["title"], x["properties"]["sheetId"]) for x in meta["sheets"] if x["properties"]["title"].startswith(prefix))
         if len(old) > keep:
-            self._call("POST", "%s/%s:batchUpdate" % (self.API, self.sid), json={"requests": [{"deleteSheet": {"sheetId": sid}} for _, sid in old[:-keep]]})
+            self._call("POST", "%s/%s:batchUpdate" % (self.API, self.sid), json={"requests": [{"deleteSheet": {"sheetId": sid}} for _, sid in old[:len(old) - keep]]})
+    def order_tabs(self):
+        """Keep the tabs tidy: data tabs first, then Register (by month), then Dispatch (by month), then Backup."""
+        meta = self._call("GET", "%s/%s?fields=sheets.properties" % (self.API, self.sid))
+        tabs = [(x["properties"]["title"], x["properties"]["sheetId"], x["properties"]["index"]) for x in meta["sheets"]]
+        def key(t):
+            n, _, i = t
+            if n.startswith("Register "): return (1, n, 0)
+            if n.startswith("Dispatch "): return (2, n, 0)
+            if n.startswith("Backup"): return (3, n, 0)
+            return (0, "", i)
+        want = sorted(tabs, key=key)
+        reqs = [{"updateSheetProperties": {"properties": {"sheetId": sid, "index": pos}, "fields": "index"}} for pos, (_, sid, cur) in enumerate(want) if [t[1] for t in tabs].index(sid) != pos]
+        if reqs: self._call("POST", "%s/%s:batchUpdate" % (self.API, self.sid), json={"requests": reqs})
     def replace_tab(self, tab, rows, header_rows=2, fixed_cols=9):
         """Rewrite a human-readable report tab (created if missing). The app owns this tab; nobody types in it."""
         meta = self._call("GET", "%s/%s?fields=sheets.properties" % (self.API, self.sid))
@@ -134,6 +147,8 @@ class SheetsBackend:
         if sid is None:
             r = self._call("POST", "%s/%s:batchUpdate" % (self.API, self.sid), json={"requests": [{"addSheet": {"properties": {"title": tab}}}]})
             sid = r["replies"][0]["addSheet"]["properties"]["sheetId"]
+            try: self.order_tabs()
+            except Exception: pass   # tidy order is only for looks
         q = urllib.parse.quote(tab)
         self._call("POST", "%s/%s/values/%s:clear" % (self.API, self.sid, q), json={})
         for i in range(0, len(rows), 400):
