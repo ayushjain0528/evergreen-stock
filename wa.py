@@ -196,9 +196,10 @@ def read_photo(images, key, model="claude-sonnet-5-5", post=None):
              json={"model": model, "max_tokens": 2000, "messages": [{"role": "user", "content": content}]}, timeout=90)
     if r.status_code != 200: raise ValueError("The photo reader said: %s" % r.text[:200])
     txt = "".join(b.get("text", "") for b in r.json().get("content", []))
-    m = re.search(r"\{.*\}", txt, re.S)
-    if not m: raise ValueError("The photo reader did not return a list.")
-    d = json.loads(m.group(0))
+    i = txt.find("{")
+    if i < 0: raise ValueError("The photo reader did not return a list.")
+    try: d, _ = json.JSONDecoder().raw_decode(txt[i:])
+    except Exception: raise ValueError("The photo reader's answer could not be understood. Try again or use a clearer photo.")
     groups = []
     for g in d.get("groups", []):
         ls = [dict(text=str(l.get("text", "")).strip(), qty=float(l.get("qty") or 0), unit=str(l.get("unit", ""))) for l in g.get("lines", []) if l.get("text")]
