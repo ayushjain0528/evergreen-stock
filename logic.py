@@ -4,7 +4,7 @@ import pandas as pd
 from store import SCHEMA, new_id, stamp, today, hash_pin, check_hash, token_hash, new_token, now
 from datetime import timedelta
 
-LOGIC_VERSION = "2026-11-13-a"
+LOGIC_VERSION = "2026-11-13-b"
 BUCKETS = ["good", "hold", "bgrade", "recycle", "scrap"]
 BUCKET_NAME = {"good": "Good stock", "hold": "On hold (returns)", "bgrade": "B-grade", "recycle": "To recycle", "scrap": "Scrap"}
 ROLES = ["admin", "supervisor", "operator", "loader", "sales"]
@@ -400,6 +400,26 @@ def add_item(store, category, brand, item, spec, unit, price=0.0, min_level=0.0)
     if dup: raise Problem("This item already exists.")
     store.append("Items", [dict(id="I" + new_id()[:6], category=category.strip(), brand=brand.strip(), item=item.strip(), spec=spec.strip(), unit=unit.strip() or "nos",
                                 kind="raw" if category.strip().lower().startswith("raw") else "finished", price=price, min_level=min_level, std_weight=0, active=1, subcategory="")])
+
+def edit_item(store, user, item_id, category=None, brand=None, item=None, spec=None, unit=None, active=None):
+    """Rename / re-describe an item. Stock and history follow the item id, so nothing moves. Returns a short text of what changed ('' if nothing)."""
+    rows = {r["id"]: r for r in store.rows("Items")}
+    if item_id not in rows: raise Problem("That item was not found.")
+    o = rows[item_id]; n = dict(o)
+    for k, v in (("category", category), ("brand", brand), ("item", item), ("spec", spec), ("unit", unit)):
+        if v is not None: n[k] = str(v).strip()
+    if active is not None: n["active"] = 1 if active else 0
+    if not n["category"] or not n["item"]: raise Problem("Category and item name are needed.")
+    key = lambda r: (str(r["category"]).strip().lower(), str(r["brand"]).strip().lower(), str(r["item"]).strip().lower(), str(r["spec"]).strip().lower())
+    if any(r["id"] != item_id and key(r) == key(n) for r in rows.values()): raise Problem("Another item already has exactly this category, brand, name and size.")
+    ch = []
+    for k in ("category", "brand", "item", "spec", "unit"):
+        if str(o[k]).strip() != str(n[k]).strip(): ch.append("%s: %s -> %s" % (k, str(o[k]).strip() or "-", str(n[k]).strip() or "-"))
+    if (str(o["active"]) in ("1", "True", "true", "1.0")) != bool(int(n["active"])): ch.append("active: %s -> %s" % (o["active"], n["active"]))
+    if not ch: return ""
+    n["kind"] = "raw" if str(n["category"]).lower().startswith("raw") else "finished"
+    store.update("Items", o["_r"], n)
+    return "; ".join(ch)
 
 def add_list(store, kind, name):
     name = name.strip()

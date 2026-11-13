@@ -8,7 +8,7 @@ import streamlit.components.v1 as components
 import importlib
 import logic as L
 import store as _store
-RELEASE = "2026-11-13-a"        # change on every release; it makes the app reload its own parts after an update
+RELEASE = "2026-11-13-b"        # change on every release; it makes the app reload its own parts after an update
 if getattr(L, "LOGIC_VERSION", None) != RELEASE:
     importlib.reload(_store); importlib.reload(L)
 from store import Store, LocalBackend, SheetsBackend, today, new_id, SCHEMA
@@ -760,7 +760,7 @@ def screen_fix():
     st.caption("Pick a saved entry and correct it. Nothing is deleted: the old value is written into the entry's note with your name.")
     names = {r["id"]: ("%s | %s" % (r["brand"], r["name"]) if r["brand"] and r["brand"].lower() != "evergreen" else r["name"]) for _, r in items.iterrows()}
     units = items.set_index("id")["unit"].to_dict()
-    t1, t2 = st.tabs(["Fix one entry", "Move many to another item"])
+    t1, t2, t3 = st.tabs(["Fix one entry", "Move many to another item", "Rename an item"])
     TYPES = {"All": None, "Dispatch": ("dispatch",), "Production": ("production",), "Inward": ("inward",), "Stock added / opening": ("opening",), "Raw / waste": ("raw_in", "raw_use", "waste")}
     def pool(prefix):
         c1, c2 = st.columns(2); tp = c1.selectbox("Type", list(TYPES), key=prefix + "_t"); q = c2.text_input("Search (item, customer, vehicle)", key=prefix + "_q")
@@ -818,6 +818,28 @@ def screen_fix():
                         n = L.move_entries_to_item(S, ME, chosen, target["id"], neg); act("move_entries", "%d lines to %s" % (n, target["id"])); st.toast("Moved %d line(s)" % n, icon="✅"); reset_picker("fmi"); st.rerun()
                     except L.Problem as e: st.error(str(e))
                     except Exception as e: st.error("Could not move. (%s)" % str(e)[:160])
+    with t3:
+        st.caption("Change an item's name, size, brand, category or unit. Its stock and all its history stay with it; only the name changes everywhere.")
+        alli = L.items_df(S.rows("Items"), False)
+        lab = {r["id"]: "%s | %s  [%s]%s" % (r["brand"], r["name"], r["category"], "" if r["active"] else "  (switched off)") for _, r in alli.iterrows()}
+        q = st.text_input("Search the item (e.g. 11.2kg)", key="rn_q")
+        ids = [i for i in lab if not q.strip() or q.strip().lower() in lab[i].lower()]
+        pk = st.selectbox("Item to change (%d shown)" % len(ids), ids, index=None, placeholder="Choose the item", format_func=lambda i: lab.get(i, str(i)), key="rn_pick")
+        if pk:
+            r = alli[alli["id"] == pk].iloc[0]
+            cats = L.categories(S.rows("Items"), S.rows("Lists")); cats = cats if r["category"] in cats else [r["category"]] + cats
+            c1, c2 = st.columns(2); cat = c1.selectbox("Category", cats, index=cats.index(r["category"]), key="rn_c_" + pk); br = c2.text_input("Brand", value=r["brand"], key="rn_b_" + pk)
+            nm = st.text_input("Item name", value=r["item"], key="rn_i_" + pk); sp = st.text_input("Size / details", value=r["spec"], key="rn_s_" + pk)
+            units = ["rolls", "pieces", "sets", "bags", "boxes", "kg", "nos", "bundle"]; units = units if r["unit"] in units else [r["unit"]] + units
+            c3, c4 = st.columns(2); un = c3.selectbox("Unit", units, index=units.index(r["unit"]), key="rn_u_" + pk); ac = c4.checkbox("Active (shown in lists)", value=bool(r["active"]), key="rn_a_" + pk)
+            st.markdown("**It will read:** " + ("%s | %s %s" % (br, nm, sp)).strip())
+            if st.button("Save the new name", type="primary", key="rn_save"):
+                try:
+                    c = L.edit_item(S, ME, pk, category=cat, brand=br, item=nm, spec=sp, unit=un, active=ac)
+                    if c: act("rename_item", "%s %s" % (pk, c)); st.toast("Saved", icon="✅"); st.rerun()
+                    else: st.info("Nothing was different.")
+                except L.Problem as e: st.error(str(e))
+                except Exception as e: st.error("Could not save. (%s)" % str(e)[:160])
     st.caption("Note: fixing a dispatch does not change the orders it ticked off. A return needs to be entered on the Returns screen.")
 
 
