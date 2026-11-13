@@ -8,7 +8,7 @@ import streamlit.components.v1 as components
 import importlib
 import logic as L
 import store as _store
-RELEASE = "2026-11-02-b"        # change on every release; it makes the app reload its own parts after an update
+RELEASE = "2026-11-13-a"        # change on every release; it makes the app reload its own parts after an update
 if getattr(L, "LOGIC_VERSION", None) != RELEASE:
     importlib.reload(_store); importlib.reload(L)
 from store import Store, LocalBackend, SheetsBackend, today, new_id, SCHEMA
@@ -753,8 +753,76 @@ def screen_admin():
                         except Exception as e: st.error("Could not load. (%s)" % str(e)[:160])
 
 
+def screen_fix():
+    """Correct wrong entries: change the item, quantity, date, customer, vehicle, shift or note of a saved entry. Everything stays in the history."""
+    items, moves, tab = load()
+    st.subheader("Fix entries")
+    st.caption("Pick a saved entry and correct it. Nothing is deleted: the old value is written into the entry's note with your name.")
+    names = {r["id"]: ("%s | %s" % (r["brand"], r["name"]) if r["brand"] and r["brand"].lower() != "evergreen" else r["name"]) for _, r in items.iterrows()}
+    units = items.set_index("id")["unit"].to_dict()
+    t1, t2 = st.tabs(["Fix one entry", "Move many to another item"])
+    TYPES = {"All": None, "Dispatch": ("dispatch",), "Production": ("production",), "Inward": ("inward",), "Stock added / opening": ("opening",), "Raw / waste": ("raw_in", "raw_use", "waste")}
+    def pool(prefix):
+        c1, c2 = st.columns(2); tp = c1.selectbox("Type", list(TYPES), key=prefix + "_t"); q = c2.text_input("Search (item, customer, vehicle)", key=prefix + "_q")
+        c3, c4 = st.columns(2); d1 = c3.date_input("From", value=date.today() - timedelta(days=7), key=prefix + "_d1"); d2 = c4.date_input("To", value=date.today(), key=prefix + "_d2")
+        rows = [m for m in S.rows("Moves") if m["type"] in L.FIXABLE and not L._is_void(m) and str(d1) <= m["date"] <= str(d2) and (TYPES[tp] is None or m["type"] in TYPES[tp])]
+        if q.strip():
+            ql = q.strip().lower(); rows = [m for m in rows if ql in (names.get(m["item_id"], "") + " " + m["party"] + " " + m["vehicle"] + " " + m["note"]).lower()]
+        return sorted(rows, key=lambda m: (m["date"], m["ts"]), reverse=True)[:150]
+    def label(m):
+        return "%s · %s · %s%s · %s %s" % (m["date"][5:], KIND.get(m["type"], m["type"]).split(" /")[0], (m["party"] + " · ") if m["party"] else "", names.get(m["item_id"], m["item_id"]), L.fmt(abs(L.f(m["qty"]))), units.get(m["item_id"], ""))
+    with t1:
+        rows = pool("fx")
+        if not rows: st.info("No entries found for these choices.")
+        else:
+            pick = st.selectbox("Entry to fix (%d shown)" % len(rows), [m["id"] for m in rows], index=None, placeholder="Choose the entry", format_func=lambda i: (label(next(x for x in rows if x["id"] == i)) if any(x["id"] == i for x in rows) else str(i)), key="fx_pick")
+            m = next((x for x in rows if x["id"] == pick), None)
+            if m:
+                st.markdown("**Now:** " + label(m) + (" · vehicle %s" % m["vehicle"] if m["vehicle"] else "") + (" · shift %s" % m["shift"] if m["shift"] else "") + " · entered by %s" % m["user"])
+                kinds = ["raw"] if m["type"] in ("raw_in", "raw_use") else ["finished"]
+                st.markdown("**Change the item** (leave empty to keep the same item)")
+                newit = pick_item("fxi", items, kinds=kinds)
+                c1, c2 = st.columns(2)
+                qty = c1.number_input("Quantity", min_value=0.0, value=float(abs(L.f(m["qty"]))), step=1.0, format="%g", key="fx_q_" + m["id"])
+                dt = c2.date_input("Date", value=date.fromisoformat(m["date"]), max_value=date.today(), key="fx_d_" + m["id"])
+                c3, c4 = st.columns(2)
+                party = c3.text_input("Customer / place", value=m["party"], key="fx_p_" + m["id"]) if m["type"] in ("dispatch", "inward") else None
+                veh = c4.text_input("Vehicle", value=m["vehicle"], key="fx_v_" + m["id"]) if m["type"] == "dispatch" else None
+                shift = machine = None
+                if m["type"] == "production":
+                    c5, c6 = st.columns(2); shift = c5.selectbox("Shift", ["", "A", "B"], index=["", "A", "B"].index(m["shift"]) if m["shift"] in ("", "A", "B") else 0, key="fx_s_" + m["id"])
+                    machine = c6.text_input("Machine", value=m["machine"], key="fx_m_" + m["id"])
+                nt = st.text_input("Note", value=m["note"].split(" [")[0], key="fx_n_" + m["id"])
+                whole = st.checkbox("Apply date, customer, vehicle and shift to every line saved with this entry (the whole load)", value=m["type"] == "dispatch", key="fx_w_" + m["id"]) if m["type"] in ("dispatch", "production") else False
+                neg = st.checkbox("Allow stock to go below zero (admin only)", key="fx_neg") if IS_ADMIN else False
+                if st.button("Save the correction", type="primary", key="fx_save"):
+                    keep_note = None if nt.strip() == m["note"].split(" [")[0].strip() else nt
+                    try:
+                        n = L.edit_entry(S, ME, m["id"], item_id=(newit["id"] if newit is not None else None), qty=qty, date=str(dt), party=party, vehicle=veh, shift=shift, machine=machine, note=keep_note, whole_load=whole, allow_negative=neg)
+                        act("fix_entry", "%s %s" % (m["type"], m["id"])); st.toast("Corrected %d line(s)" % n if n else "Nothing was different", icon="✅"); reset_picker("fxi"); st.rerun()
+                    except L.Problem as e: st.error(str(e))
+                    except Exception as e: st.error("Could not save. (%s)" % str(e)[:160])
+    with t2:
+        st.caption("For a mix-up that happened several times: tick the lines, choose the right item, press move.")
+        rows = pool("fm")
+        if rows:
+            df = pd.DataFrame([dict(Move=False, id=m["id"], Date=m["date"], Type=KIND.get(m["type"], m["type"]).split(" /")[0], Customer=m["party"], Item=names.get(m["item_id"], m["item_id"]), Qty=abs(L.f(m["qty"]))) for m in rows])
+            ed = st.data_editor(df, hide_index=True, disabled=["id", "Date", "Type", "Customer", "Item", "Qty"], column_order=["Move", "Date", "Type", "Customer", "Item", "Qty"], key="fm_ed", **WIDE)
+            chosen = ed[ed["Move"]]["id"].tolist(); st.caption("%d lines ticked" % len(chosen))
+            st.markdown("**Move them to this item**"); target = pick_item("fmi", items)
+            neg = st.checkbox("Allow stock to go below zero (admin only)", key="fm_neg") if IS_ADMIN else False
+            if st.button("Move the ticked lines", type="primary", key="fm_go"):
+                if not chosen or target is None: st.error("Tick the lines and choose the item.")
+                else:
+                    try:
+                        n = L.move_entries_to_item(S, ME, chosen, target["id"], neg); act("move_entries", "%d lines to %s" % (n, target["id"])); st.toast("Moved %d line(s)" % n, icon="✅"); reset_picker("fmi"); st.rerun()
+                    except L.Problem as e: st.error(str(e))
+                    except Exception as e: st.error("Could not move. (%s)" % str(e)[:160])
+    st.caption("Note: fixing a dispatch does not change the orders it ticked off. A return needs to be entered on the Returns screen.")
+
+
 SCREENS = {"Stock": screen_stock, "Inward": screen_inward, "Add Stock": screen_addstock, "Production": screen_production, "Dispatch": screen_dispatch, "Orders": screen_orders, "Returns": screen_returns,
-           "Raw & Waste": screen_raw, "Count": screen_count, "Reports": screen_reports, "Admin": screen_admin}
+           "Raw & Waste": screen_raw, "Count": screen_count, "Reports": screen_reports, "Fix entries": screen_fix, "Admin": screen_admin}
 
 st.markdown("### 🌿 Evergreen Stock" + ("" if LIVE else "  ·  TRIAL"))
 with st.sidebar:

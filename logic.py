@@ -4,13 +4,13 @@ import pandas as pd
 from store import SCHEMA, new_id, stamp, today, hash_pin, check_hash, token_hash, new_token, now
 from datetime import timedelta
 
-LOGIC_VERSION = "2026-11-02-b"
+LOGIC_VERSION = "2026-11-13-a"
 BUCKETS = ["good", "hold", "bgrade", "recycle", "scrap"]
 BUCKET_NAME = {"good": "Good stock", "hold": "On hold (returns)", "bgrade": "B-grade", "recycle": "To recycle", "scrap": "Scrap"}
 ROLES = ["admin", "supervisor", "operator", "loader", "sales"]
 NAV = {
-    "admin":      ["Stock", "Inward", "Add Stock", "Production", "Dispatch", "Orders", "Returns", "Raw & Waste", "Count", "Reports", "Admin"],
-    "supervisor": ["Stock", "Inward", "Add Stock", "Production", "Dispatch", "Orders", "Returns", "Raw & Waste", "Count", "Reports"],
+    "admin":      ["Stock", "Inward", "Add Stock", "Production", "Dispatch", "Orders", "Returns", "Raw & Waste", "Count", "Reports", "Fix entries", "Admin"],
+    "supervisor": ["Stock", "Inward", "Add Stock", "Production", "Dispatch", "Orders", "Returns", "Raw & Waste", "Count", "Reports", "Fix entries"],
     "operator":   ["Stock", "Inward", "Add Stock", "Production", "Raw & Waste", "Count"],
     "loader":     ["Stock", "Inward", "Dispatch", "Returns"],
     "sales":      ["Stock", "Orders", "Returns"],
@@ -241,6 +241,58 @@ def edit_move_date(store, user, move_id, new_date):
         if g["date"] == new_date: continue
         row = dict(g); row["date"] = new_date; row["note"] = (g["note"] + " [date %s -> %s by %s]" % (g["date"], new_date, user)).strip(); store.update("Moves", g["_r"], row)
     return len(group)
+
+FIXABLE = ("production", "inward", "opening", "dispatch", "raw_in", "raw_use", "waste")
+
+def _is_void(m): return str(m["void"]) in ("1", "True", "true")
+
+def _item_name(store, iid):
+    r = next((x for x in store.rows("Items") if x["id"] == iid), None)
+    return ("%s %s %s" % (r.get("brand", ""), r.get("item", ""), r.get("spec", ""))).strip() if r else iid
+
+def edit_entry(store, user, move_id, item_id=None, qty=None, date=None, party=None, vehicle=None, shift=None, machine=None, note=None, whole_load=False, allow_negative=False):
+    """Correct a wrong entry in place. Nothing is deleted: every change is written into the entry's note (who, what it was before).
+    item and quantity change only this line. Customer, vehicle, date, shift, machine apply to the whole load (every line saved together) when whole_load is true."""
+    rows = store.rows("Moves"); m = next((x for x in rows if x["id"] == move_id), None)
+    if not m or _is_void(m): raise Problem("Entry not found.")
+    if m["type"] not in FIXABLE: raise Problem("This kind of entry cannot be fixed here. Cancel it and enter it again.")
+    if date is not None and str(date) > today(): raise Problem("The date cannot be in the future.")
+    old_q = f(m["qty"]); sign = 1 if old_q >= 0 else -1
+    new_item = item_id or m["item_id"]
+    if item_id and not any(x["id"] == item_id for x in store.rows("Items")): raise Problem("Choose the item.")
+    new_q = sign * check_qty(qty) if qty is not None else old_q
+    if m["bucket"] == "good" and not allow_negative and (new_item != m["item_id"] or abs(new_q - old_q) > 1e-9):
+        delta = {}
+        delta[m["item_id"]] = delta.get(m["item_id"], 0.0) - old_q
+        delta[new_item] = delta.get(new_item, 0.0) + new_q
+        for iid, d in delta.items():
+            if d < -1e-9 and good_now(store, iid) + d < -1e-9:
+                raise Problem("That would make %s go below zero (it would be %s)." % (_item_name(store, iid), fmt(good_now(store, iid) + d)))
+    group = [x for x in rows if x["ref"] == m["ref"] and x["type"] == m["type"] and not _is_void(x)] if whole_load else [m]
+    n = 0
+    for g in group:
+        row = dict(g); ch = []
+        if g["id"] == m["id"]:
+            if new_item != g["item_id"]: ch.append("item %s -> %s" % (_item_name(store, g["item_id"]), _item_name(store, new_item))); row["item_id"] = new_item
+            if abs(new_q - old_q) > 1e-9: ch.append("qty %s -> %s" % (fmt(abs(old_q)), fmt(abs(new_q)))); row["qty"] = round(new_q, 3)
+        for key, val in (("date", date), ("party", party), ("vehicle", vehicle), ("shift", shift), ("machine", machine)):
+            if val is None: continue
+            val = " ".join(str(val).upper().split()) if key == "vehicle" else str(val).strip()
+            if key == "vehicle" and not val and m["type"] == "dispatch": raise Problem("Type the vehicle number.")
+            if val != str(g.get(key, "")):
+                if key in ("party", "vehicle", "date", "shift", "machine") and g is not m and not whole_load: continue
+                ch.append("%s %s -> %s" % (key, g.get(key, "") or "-", val or "-")); row[key] = val
+        if note is not None and g["id"] == m["id"] and note.strip() != str(g["note"]).strip():
+            row["note"] = note.strip(); ch.append("note changed")
+        if ch:
+            row["note"] = (str(row["note"]) + " [fixed by %s: %s]" % (user, "; ".join(ch))).strip(); store.update("Moves", g["_r"], row); n += 1
+    return n
+
+def move_entries_to_item(store, user, move_ids, new_item_id, allow_negative=False):
+    """Put several wrongly booked lines on the right item (for example 330 MFQ booked on 330 Metal)."""
+    n = 0
+    for mid in move_ids: n += edit_entry(store, user, mid, item_id=new_item_id, allow_negative=allow_negative)
+    return n
 
 # ---------- tie dispatch to orders ----------
 _GENERIC = {"traders", "agro", "enterprises", "solutions", "pipes", "agencies", "irrigation", "company", "stores", "marketing", "agri"}
