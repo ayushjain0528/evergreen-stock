@@ -1,4 +1,4 @@
-"""Read WhatsApp production / dispatch messages (or the text a photo reader returns) and match each line to an app item.
+"""Read WhatsApp production / dispatch messages and match each line to an item.
 Nothing here saves anything: it only proposes. The screen shows every line for you to check first."""
 import re, hashlib
 
@@ -177,31 +177,3 @@ def match(line, items, n=4):
 def trip_key(date, vehicle, groups):
     s = "|".join([date, vehicle] + ["%s:%s" % (g["party"], ",".join("%s=%g" % (l["item"], l["qty"]) for l in g["lines"])) for g in groups])
     return "wa" + hashlib.sha1(s.encode()).hexdigest()[:8]
-
-
-# ------------------------------------------------------------------ photo reader (needs the owner's Anthropic key)
-PROMPT = ("This is a photo of a handwritten or printed dispatch slip from an Indian drip-irrigation pipe factory. "
-          "Read it carefully and answer with JSON only, no other words, in exactly this shape: "
-          '{"date":"YYYY-MM-DD or empty","vehicle":"vehicle number or empty","groups":[{"party":"customer name and place","lines":[{"text":"product description exactly as written, e.g. 16R 9kg 270mtrs 40cm","qty":number,"unit":"rolls|bags|boxes|pcs"}]}]}. '
-          "If something is unclear, still give your best reading but put a question mark at the end of that text. Never invent lines.")
-
-
-def read_photo(images, key, model="claude-sonnet-5-5", post=None):
-    """images = [(bytes, mime)] -> dict like parse_dispatch. `post` can be replaced in tests."""
-    import base64, json, requests
-    post = post or requests.post
-    content = [{"type": "image", "source": {"type": "base64", "media_type": mt or "image/jpeg", "data": base64.b64encode(b).decode()}} for b, mt in images]
-    content.append({"type": "text", "text": PROMPT})
-    r = post("https://api.anthropic.com/v1/messages", headers={"x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json"},
-             json={"model": model, "max_tokens": 2000, "messages": [{"role": "user", "content": content}]}, timeout=90)
-    if r.status_code != 200: raise ValueError("The photo reader said: %s" % r.text[:200])
-    txt = "".join(b.get("text", "") for b in r.json().get("content", []))
-    i = txt.find("{")
-    if i < 0: raise ValueError("The photo reader did not return a list.")
-    try: d, _ = json.JSONDecoder().raw_decode(txt[i:])
-    except Exception: raise ValueError("The photo reader's answer could not be understood. Try again or use a clearer photo.")
-    groups = []
-    for g in d.get("groups", []):
-        ls = [dict(text=str(l.get("text", "")).strip(), qty=float(l.get("qty") or 0), unit=str(l.get("unit", ""))) for l in g.get("lines", []) if l.get("text")]
-        if ls: groups.append(dict(party=str(g.get("party", "")).strip(), lines=ls))
-    return dict(kind="dispatch", date=str(d.get("date") or ""), vehicle=re.sub(r"\s+", "", str(d.get("vehicle") or "")).upper(), groups=groups)

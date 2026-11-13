@@ -9,7 +9,7 @@ import importlib
 import logic as L
 import wa
 import store as _store
-RELEASE = "2026-11-13-d"        # change on every release; it makes the app reload its own parts after an update
+RELEASE = "2026-11-13-e"        # change on every release; it makes the app reload its own parts after an update
 if getattr(L, "LOGIC_VERSION", None) != RELEASE:
     importlib.reload(_store); importlib.reload(L)
 from store import Store, LocalBackend, SheetsBackend, today, new_id, SCHEMA
@@ -941,35 +941,14 @@ def wa_review(parsed, tag):
 
 def screen_wa():
     st.subheader("From WhatsApp")
-    st.caption("Paste a production or dispatch message, or upload a photo of a dispatch slip. The app shows what it understood, line by line. Nothing is saved until you check it and press Save.")
-    t1, t2 = st.tabs(["Paste a message", "From a photo"])
-    with t1:
-        txt = st.text_area("Paste the message here", height=200, key="wa_txt", placeholder="Production details\nDate- 12/11/26\nShift-B\n\n8mil 7.3kg 20cm 800mtrs(evg) -06rolls ...")
-        if txt.strip():
-            kind = st.radio("This is a", ["Production", "Dispatch"], index=0 if wa.guess_kind(txt) == "production" else 1, horizontal=True, key="wa_kind")
-            parsed = wa.parse_production(txt) if kind == "Production" else wa.parse_dispatch(txt)
-            n = len(parsed["lines"]) if kind == "Production" else sum(len(g["lines"]) for g in parsed["groups"])
-            if not n: st.error("I could not find any lines. Each line should end with a quantity, like '16R nisi 300mtrs 10kg 40cm -112rolls'.")
-            else: wa_review(parsed, "wp" + hashlib.md5((kind + txt).encode()).hexdigest()[:6])
-    with t2:
-        key = os.environ.get("ANTHROPIC_API_KEY", "")
-        if not key and any(os.path.exists(os.path.join(d, "secrets.toml")) for d in (os.path.join(os.path.dirname(__file__), ".streamlit"), os.path.expanduser("~/.streamlit"))):
-            try: key = st.secrets.get("ANTHROPIC_API_KEY", "")
-            except Exception: key = ""
-        if not key:
-            st.info("Reading photos needs a key from Anthropic (the company behind Claude). It is not set up yet. To switch it on: get a key at console.anthropic.com, then in Streamlit open Manage app > Settings > Secrets and add the line  ANTHROPIC_API_KEY = \"your key\"  and Save. Each photo costs a small amount (about a rupee or two).")
-        ups = st.file_uploader("Photo(s) of the dispatch slip", type=["jpg", "jpeg", "png"], accept_multiple_files=True, key="wa_ph")
-        if ups and key and st.button("Read the photo", type="primary", key="wa_read"):
-            try:
-                with st.spinner("Reading the photo..."):
-                    st.session_state["wa_ph_res"] = (hashlib.md5(b"".join(u.getvalue()[:2000] for u in ups)).hexdigest()[:6], wa.read_photo([(u.getvalue(), u.type) for u in ups], key))
-                act("wa_photo_read", "%d photo(s)" % len(ups))
-            except Exception as e: st.error("Could not read the photo. (%s)" % str(e)[:200])
-        res = st.session_state.get("wa_ph_res")
-        if res and ups:
-            st.caption("A photo can be misread (handwriting, angle). Check every line against the slip before saving. A line marked with ? was unclear to the reader.")
-            if not res[1]["groups"]: st.error("Nothing could be read. Try a clearer, straight-on photo.")
-            else: wa_review(res[1], "wph" + res[0])
+    st.caption("Paste a production or dispatch message from WhatsApp. The app shows what it understood, line by line. Nothing is saved until you check it and press Save.")
+    txt = st.text_area("Paste the message here", height=200, key="wa_txt", placeholder="Production details\nDate- 12/11/26\nShift-B\n\n8mil 7.3kg 20cm 800mtrs(evg) -06rolls ...")
+    if txt.strip():
+        kind = st.radio("This is a", ["Production", "Dispatch"], index=0 if wa.guess_kind(txt) == "production" else 1, horizontal=True, key="wa_kind")
+        parsed = wa.parse_production(txt) if kind == "Production" else wa.parse_dispatch(txt)
+        n = len(parsed["lines"]) if kind == "Production" else sum(len(g["lines"]) for g in parsed["groups"])
+        if not n: st.error("I could not find any lines. Each line should end with a quantity, like '16R nisi 300mtrs 10kg 40cm -112rolls'.")
+        else: wa_review(parsed, "wp" + hashlib.md5((kind + txt).encode()).hexdigest()[:6])
 
 
 SCREENS = {"Stock": screen_stock, "Inward": screen_inward, "Add Stock": screen_addstock, "Production": screen_production, "Dispatch": screen_dispatch, "WhatsApp": screen_wa, "Orders": screen_orders, "Returns": screen_returns,
