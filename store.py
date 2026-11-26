@@ -11,6 +11,7 @@ SCHEMA = {
     "Lists":    ["kind", "name", "active"],
     "Users":    ["name", "role", "salt", "pin_hash", "active", "fails", "locked_until", "created"],
     "Sessions": ["token_hash", "user", "expires", "created"],
+    "Drafts":   ["user", "screen", "data", "ts"],
     "Log":      ["ts", "date", "user", "role", "action", "screen", "detail", "result", "ms"],
 }
 READ = [t for t in SCHEMA if t != "Log"]      # the activity log is write-only for the app (it can grow large)

@@ -4,7 +4,7 @@ import pandas as pd
 from store import SCHEMA, new_id, stamp, today, hash_pin, check_hash, token_hash, new_token, now
 from datetime import timedelta
 
-LOGIC_VERSION = "2026-11-13-h"
+LOGIC_VERSION = "2026-11-26-i"
 BUCKETS = ["good", "hold", "bgrade", "recycle", "scrap"]
 BUCKET_NAME = {"good": "Good stock", "hold": "On hold (returns)", "bgrade": "B-grade", "recycle": "To recycle", "scrap": "Scrap"}
 ROLES = ["admin", "supervisor", "operator", "loader", "sales"]
@@ -507,7 +507,7 @@ def update_user(store, name, **ch):
     u = next((x for x in users(store) if x["name"] == name), None)
     if u: row = dict(u); row.update(ch); store.update("Users", u["_r"], row)
 
-def login(store, name, pin):
+def login(store, name, pin, keep=True):
     u = next((x for x in users(store) if x["name"].lower() == name.strip().lower()), None)
     if not u or str(u["active"]) not in ("1", "True", "true"): raise Problem("Wrong name or PIN.")
     lk = u["locked_until"]
@@ -518,10 +518,11 @@ def login(store, name, pin):
         store.update("Users", u["_r"], row); raise Problem("Wrong name or PIN.")
     if int(f(u["fails"])) or u["locked_until"]:
         row = dict(u); row["fails"] = 0; row["locked_until"] = ""; store.update("Users", u["_r"], row)
-    return new_session(store, u["name"]), u
+    return new_session(store, u["name"], u["role"] == "admin" and keep), u
 
-def new_session(store, name):
-    tok = new_token()
+def new_session(store, name, link_ok=False):
+    """link_ok: an admin who ticked 'keep me signed in' gets a token starting 'r.', which the page address may carry (iPhone browsers drop the cookie)."""
+    tok = ("r." if link_ok else "") + new_token()
     store.append("Sessions", [dict(token_hash=token_hash(tok), user=name, expires=(now() + timedelta(days=SESSION_DAYS)).strftime("%Y-%m-%d %H:%M:%S"), created=stamp())])
     return tok
 
@@ -631,3 +632,21 @@ def today_movement(items_rows, moves_rows, day=None):
         if iid not in items.index: continue
         out.append(dict(Item=items.loc[iid, "brand"] + " | " + items.loc[iid, "name"], Unit=items.loc[iid, "unit"], In=g[g["qty"] > 0]["qty"].sum(), Out=-g[g["qty"] < 0]["qty"].sum()))
     return pd.DataFrame(out, columns=["Item", "Unit", "In", "Out"])
+
+
+# ---------- unsaved work (so a half-entered dispatch survives a log-out or a reload) ----------
+def draft_get(store, user, screen):
+    r = next((x for x in store.rows("Drafts") if x["user"] == user and x["screen"] == screen), None)
+    if not r or not r["data"]: return None
+    try: return json.loads(r["data"])
+    except Exception: return None
+
+def draft_put(store, user, screen, data):
+    """data=None clears it. One row per person per screen; written only when it changed."""
+    payload = json.dumps(data, separators=(",", ":")) if data else ""
+    r = next((x for x in store.rows("Drafts") if x["user"] == user and x["screen"] == screen), None)
+    if r:
+        if r["data"] == payload: return
+        store.update("Drafts", r["_r"], dict(user=user, screen=screen, data=payload, ts=stamp()))
+    elif payload:
+        store.append("Drafts", [dict(user=user, screen=screen, data=payload, ts=stamp())])

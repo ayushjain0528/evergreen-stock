@@ -9,7 +9,7 @@ import importlib
 import logic as L
 import wa
 import store as _store
-RELEASE = "2026-11-13-h"        # change on every release; it makes the app reload its own parts after an update
+RELEASE = "2026-11-26-i"        # change on every release; it makes the app reload its own parts after an update
 if getattr(L, "LOGIC_VERSION", None) != RELEASE:
     importlib.reload(_store); importlib.reload(L)
 from store import Store, LocalBackend, SheetsBackend, today, new_id, SCHEMA
@@ -117,8 +117,8 @@ def token_in():
 
 def current_user():
     tok = token_in(); u = L.user_from_token(S, tok)
-    if u and u["role"] == "admin" and tok != (st.session_state.get("tok") or st.context.cookies.get("sb_s")):
-        return None          # an admin login is never accepted from a link, so a copied link cannot open the admin account
+    if u and u["role"] == "admin" and not (tok or "").startswith("r.") and tok != (st.session_state.get("tok") or st.context.cookies.get("sb_s")):
+        return None          # an admin login is accepted from a link only if the admin chose "keep me signed in" (token starts r.)
     return u
 
 def login_screen():
@@ -135,13 +135,14 @@ def login_screen():
     names = [u["name"] for u in users if str(u["active"]) in ("1", "True", "true")]
     with st.form("login"):
         nm = st.selectbox("Your name", names); pin = st.text_input("PIN", type="password", max_chars=12)
+        keep = st.checkbox("Keep me signed in on this phone (admin: do not share the page link afterwards)", value=True)
         if st.form_submit_button("Open"):
             try:
-                tok, u = L.login(S, nm, pin)
+                tok, u = L.login(S, nm, pin, keep)
             except L.Problem as e:
                 S.log(nm, "", "login", "login", str(e), "problem"); st.error(str(e)); return
             S.log(nm, u["role"], "login", "login", "signed in")
-            st.session_state["tok"] = tok; (None if u["role"] == "admin" else st.query_params.__setitem__("s", tok)); set_cookie(tok); st.rerun()
+            st.session_state["tok"] = tok; (None if (u["role"] == "admin" and not tok.startswith("r.")) else st.query_params.__setitem__("s", tok)); set_cookie(tok); st.rerun()
     st.caption("You stay signed in on this phone. You will not need to type the PIN again.")
 
 
@@ -157,7 +158,7 @@ except RuntimeError as e:      # the Google Sheet could not be reached: say why 
 if not user:
     login_screen(); st.stop()
 st.session_state["tok"] = token_in()
-if user["role"] == "admin":
+if user["role"] == "admin" and not (st.session_state["tok"] or "").startswith("r."):
     if "s" in st.query_params: del st.query_params["s"]
 elif st.query_params.get("s") != st.session_state["tok"]: st.query_params["s"] = st.session_state["tok"]
 if st.context.cookies.get("sb_s") != st.session_state["tok"]: set_cookie(st.session_state["tok"])
@@ -368,9 +369,33 @@ def trip_no_pick(vehicle, day, key):
     return "" if ch.startswith("The same") else nxt
 
 
+def dispatch_draft_save(cart):
+    try:
+        L.draft_put(S, ME, "dispatch", dict(cart=[list(c) for c in cart], veh=st.session_state.get("d_veh", ""), note=st.session_state.get("d_note", ""),
+                                            date=str(st.session_state.get("d_date", date.today()))) if cart else None)
+    except Exception as e: act("draft_error", str(e)[:120], "error")
+
+
 def screen_dispatch():
     items, _, tab = load()
     st.subheader("Dispatch")
+    if not st.session_state.get("_dd_done"):      # once per visit: bring back a dispatch that was half-entered when the page reloaded or logged out
+        st.session_state["_dd_done"] = True
+        try: dr = L.draft_get(S, ME, "dispatch")
+        except Exception: dr = None
+        if dr and dr.get("cart") and not st.session_state.get("cart"):
+            st.session_state["cart"] = [tuple(c) for c in dr["cart"]]
+            if dr.get("veh"): st.session_state["d_veh"] = dr["veh"]
+            if dr.get("note"): st.session_state["d_note"] = dr["note"]
+            try:
+                dd = date.fromisoformat(dr.get("date", ""))
+                if dd <= date.today(): st.session_state["d_date"] = dd
+            except Exception: pass
+            st.session_state["_dd_back"] = True
+    if st.session_state.get("_dd_back") and st.session_state.get("cart"):
+        ca, cb = st.columns([4, 1]); ca.info("Your unsaved dispatch was brought back. Check it, then save. Or press Discard to start fresh.")
+        if cb.button("Discard", key="dd_discard"):
+            st.session_state["cart"] = []; st.session_state["_dd_back"] = False; dispatch_draft_save([]); st.rerun()
     vehicles = L.list_values(S.rows("Lists"), "vehicle"); parties = sorted({o["party"] for o in S.rows("Orders")} | {m["party"] for m in S.rows("Moves") if m["type"] == "dispatch" and m["party"]})
     c1, c2 = st.columns(2)
     with c1:
@@ -391,7 +416,7 @@ def screen_dispatch():
         qty = qty_box("Quantity to load", unit=(it["unit"] if it is not None else ""))
         if st.form_submit_button("➕ Add to this vehicle"):
             if it is None or not qty: st.error("Choose an item and quantity.")
-            else: cart.append((it["id"], float(qty), it["name"], it["unit"], (party or "").strip())); reset_picker("disp"); st.rerun()
+            else: cart.append((it["id"], float(qty), it["name"], it["unit"], (party or "").strip())); dispatch_draft_save(cart); reset_picker("disp"); st.rerun()
     if cart:
         st.markdown("**On this vehicle**")
         groups = []
@@ -402,7 +427,7 @@ def screen_dispatch():
             for i, c in enumerate(cart):
                 if c[4] != gp: continue
                 a, b = st.columns([4, 1]); a.write("%s %s — %s" % (L.fmt(c[1]), c[3], c[2]))
-                if b.button("✖", key="rm%d" % i): cart.pop(i); st.rerun()
+                if b.button("✖", key="rm%d" % i): cart.pop(i); dispatch_draft_save(cart); st.rerun()
         neg = st.checkbox("Allow sending more than stock (admin only)", value=False) if IS_ADMIN else False
         tno = trip_no_pick(veh, str(ddate), "d_tno")
         note = st.text_input("Note (optional)", key="d_note")
@@ -427,7 +452,7 @@ def screen_dispatch():
                     except Exception as e: act("orders_ticked", str(e)[:120], "error")
                 if n_ord: act("orders_ticked", "%d orders" % n_ord); msg = "%d order(s) updated, %d finished" % (n_ord, n_fin)
                 st.session_state["last_slip"] = trip + ".0"; st.session_state["last_slip_msg"] = msg
-                burn("disp"); st.session_state["cart"] = []; st.rerun()
+                burn("disp"); st.session_state["cart"] = []; st.session_state["_dd_back"] = False; dispatch_draft_save([]); st.rerun()
     ls = st.session_state.get("last_slip")
     if ls and not cart:
         st.success("Dispatch saved. " + st.session_state.get("last_slip_msg", ""))
