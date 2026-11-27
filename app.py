@@ -9,7 +9,7 @@ import importlib
 import logic as L
 import wa
 import store as _store
-RELEASE = "2026-11-27-b"        # change on every release; it makes the app reload its own parts after an update
+RELEASE = "2026-11-27-c"        # change on every release; it makes the app reload its own parts after an update
 if getattr(L, "LOGIC_VERSION", None) != RELEASE:
     importlib.reload(_store); importlib.reload(L)
 from store import Store, LocalBackend, SheetsBackend, today, new_id, SCHEMA
@@ -349,6 +349,7 @@ def screen_production():
     st.caption("Making something that is not in the list yet? Pick 'Other (type it)' in Category, Brand or Item. It is added as a new product when you save.")
     it, new, unit = entry_picker("prod", items, tab, kinds=["finished"])
     machines = L.list_values(S.rows("Lists"), "machine")
+    kept = combo("Kept aside for customer (optional)", L.all_parties(S), "p_kept", "Type name, or leave empty for normal stock")
     with st.form("prod", clear_on_submit=True):
         qty = qty_box("Quantity made", unit=unit)
         a, b, c = st.columns(3)
@@ -356,7 +357,7 @@ def screen_production():
         note = st.text_input("Note (optional)")
         if st.form_submit_button("Save production"):
             iid = resolve_item(it, new)
-            if iid and run(L.add_production, ME, iid, qty, str(d), shift, mach, note, nonce("prod"), ok="Saved %s" % L.fmt(qty)): burn("prod"); reset_picker("prod"); st.rerun()
+            if iid and run(L.add_production, ME, iid, qty, str(d), shift, mach, note, nonce("prod"), (kept or "").strip(), ok="Saved %s" % L.fmt(qty)): burn("prod"); reset_picker("prod"); st.rerun()
     recent(["production"])
 
 

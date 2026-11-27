@@ -4,7 +4,7 @@ import pandas as pd
 from store import SCHEMA, new_id, stamp, today, hash_pin, check_hash, token_hash, new_token, now
 from datetime import timedelta
 
-LOGIC_VERSION = "2026-11-27-b"
+LOGIC_VERSION = "2026-11-27-c"
 BUCKETS = ["good", "hold", "bgrade", "recycle", "scrap"]
 BUCKET_NAME = {"good": "Good stock", "hold": "On hold (returns)", "bgrade": "B-grade", "recycle": "To recycle", "scrap": "Scrap"}
 ROLES = ["admin", "supervisor", "operator", "loader", "sales"]
@@ -85,10 +85,10 @@ def good_now(store, item_id):
         if m["item_id"] == item_id and m["bucket"] == "good" and str(m["void"]) not in ("1", "True", "true"): tot += f(m["qty"])
     return tot
 
-def add_production(store, user, item_id, qty, date, shift="", machine="", note="", ref=""):
+def add_production(store, user, item_id, qty, date, shift="", machine="", note="", ref="", party=""):
     q = check_qty(qty); ref = ref or new_id()
     if already(store, ref): return
-    store.append("Moves", [_move(item_id, q, "good", "production", ref, user, date, shift=shift, machine=machine, note=note)])
+    store.append("Moves", [_move(item_id, q, "good", "production", ref, user, date, shift=shift, machine=machine, note=note, party=" ".join(str(party or "").split()))])
 
 def add_dispatch(store, user, lines, vehicle, party, date, note="", allow_negative=False, ref=""):
     """lines = [(item_id, qty)]"""
@@ -305,13 +305,15 @@ def party_match(a, b):
     if not na or not nb: return False
     return na == nb or bool(_tokens(a) & _tokens(b))
 
+OWN_STOCK = "Own stock (safety)"
+
 def all_parties(store):
     """One shared customer list for Orders, Dispatch and Returns: names from orders and dispatches, trimmed, no case-duplicates."""
     seen = {}
     names = [o["party"] for o in store.rows("Orders")] + [m["party"] for m in store.rows("Moves") if m["type"] in ("dispatch", "return", "return_decide")]
     for n in names:
         n = " ".join(str(n or "").split())
-        if n and n.lower() not in seen: seen[n.lower()] = n
+        if n and n != OWN_STOCK and n.lower() not in seen: seen[n.lower()] = n
     return sorted(seen.values(), key=str.lower)
 
 def open_orders_for(store, party, item_ids=None):
