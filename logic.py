@@ -2,19 +2,20 @@
 import json, os
 import pandas as pd
 from store import SCHEMA, new_id, stamp, today, hash_pin, check_hash, token_hash, new_token, now
-from datetime import timedelta
+from datetime import timedelta, date as _date
 
-LOGIC_VERSION = "2026-11-27-d"
+LOGIC_VERSION = "2026-11-27-e"
 BUCKETS = ["good", "hold", "bgrade", "recycle", "scrap"]
 BUCKET_NAME = {"good": "Good stock", "hold": "On hold (returns)", "bgrade": "B-grade", "recycle": "To recycle", "scrap": "Scrap"}
 ROLES = ["admin", "supervisor", "operator", "loader", "sales"]
 NAV = {
-    "admin":      ["Stock", "Inward", "Add Stock", "Production", "Dispatch", "WhatsApp", "Orders", "Returns", "Raw & Waste", "Count", "Reports", "Fix entries", "Admin"],
-    "supervisor": ["Stock", "Inward", "Add Stock", "Production", "Dispatch", "WhatsApp", "Orders", "Returns", "Raw & Waste", "Count", "Reports", "Fix entries"],
-    "operator":   ["Stock", "Inward", "Add Stock", "Production", "Raw & Waste", "Count"],
-    "loader":     ["Stock", "Inward", "Dispatch", "Returns"],
-    "sales":      ["Stock", "Orders", "Returns"],
+    "admin":      ["Stock", "Production", "Dispatch", "Orders", "Customers", "Inward", "Add Stock", "WhatsApp", "Returns", "Raw & Waste", "Count", "Reports", "Fix entries", "Admin"],
+    "supervisor": ["Stock", "Production", "Dispatch", "Orders", "Customers", "Inward", "Add Stock", "WhatsApp", "Returns", "Raw & Waste", "Count", "Reports", "Fix entries"],
+    "operator":   ["Stock", "Production", "Inward", "Add Stock", "Raw & Waste", "Count"],
+    "loader":     ["Stock", "Dispatch", "Customers", "Inward", "Returns"],
+    "sales":      ["Stock", "Orders", "Customers", "Returns"],
 }
+NAV_MAIN = ["Stock", "Production", "Dispatch", "Orders", "Customers", "Inward"]   # the rest sit under "More"
 SESSION_DAYS = 365
 
 def f(x, d=0.0):
@@ -393,15 +394,57 @@ def set_order_status(store, oid, status):
 
 def to_produce(store):
     items = items_df(store.rows("Items"), False); st = stock_table(items, moves_df(store.rows("Moves"))).set_index("id")
-    need = {}
+    need = {}; who = {}
     for o in store.rows("Orders"):
-        if o["status"] == "open": need[o["item_id"]] = need.get(o["item_id"], 0.0) + max(0.0, f(o["qty"]) - f(o.get("sent")))
+        if o["status"] == "open":
+            p = max(0.0, f(o["qty"]) - f(o.get("sent")))
+            if p <= 1e-9: continue
+            need[o["item_id"]] = need.get(o["item_id"], 0.0) + p
+            nm = " ".join(str(o["party"]).split()) or "(no customer)"
+            who.setdefault(o["item_id"], {}); who[o["item_id"]][nm] = who[o["item_id"]].get(nm, 0.0) + p
     rows = []
     for iid, n in need.items():
         if iid not in st.index: continue
         have = st.loc[iid, "good"]
-        rows.append(dict(id=iid, item=st.loc[iid, "name"], brand=st.loc[iid, "brand"], unit=st.loc[iid, "unit"], ordered=n, in_stock=have, to_make=max(0.0, n - have)))
-    return pd.DataFrame(rows, columns=["id", "item", "brand", "unit", "ordered", "in_stock", "to_make"]).sort_values("to_make", ascending=False)
+        cust = ", ".join("%s (%s)" % (k, fmt(v)) for k, v in sorted(who[iid].items(), key=lambda kv: -kv[1]))
+        rows.append(dict(id=iid, category=st.loc[iid, "category"], item=st.loc[iid, "name"], brand=st.loc[iid, "brand"], unit=st.loc[iid, "unit"], customers=cust, ordered=n, in_stock=have, to_make=max(0.0, n - have)))
+    return pd.DataFrame(rows, columns=["id", "category", "item", "brand", "unit", "customers", "ordered", "in_stock", "to_make"]).sort_values("to_make", ascending=False)
+
+def pending_orders(store, party=None):
+    """Every open order with something still to send: customer, category, item, pending, needed-by and days left (negative = late)."""
+    items = items_df(store.rows("Items"), False).set_index("id"); out = []
+    for o in store.rows("Orders"):
+        if o["status"] != "open": continue
+        if party is not None and not party_match(o["party"], party): continue
+        p = f(o["qty"]) - f(o.get("sent"))
+        if p <= 1e-9: continue
+        it = items.loc[o["item_id"]] if o["item_id"] in items.index else None
+        try: left = (_date.fromisoformat(str(o["due"])) - _date.fromisoformat(today())).days
+        except Exception: left = None
+        out.append(dict(Customer=" ".join(str(o["party"]).split()) or "(no customer)", Category=it["category"] if it is not None else "", Item=(it["brand"] + " | " + it["name"]) if it is not None else o["item_id"],
+                        Pending=p, Unit=it["unit"] if it is not None else "", Needed_by=str(o["due"]), Days_left=left))
+    cols = ["Customer", "Category", "Item", "Pending", "Unit", "Needed_by", "Days_left"]
+    return pd.DataFrame(out, columns=cols).sort_values(["Days_left", "Customer"], na_position="last") if out else pd.DataFrame(columns=cols)
+
+def daily_summary(store, day=None):
+    """Plain text of the day, ready to paste into WhatsApp."""
+    day = day or today(); items = items_df(store.rows("Items"), False).set_index("id")
+    made = {}; sent = {}
+    for m in store.rows("Moves"):
+        if m["date"] != day or str(m["void"]) in ("1", "True", "true", "1.0") or m["bucket"] != "good": continue
+        it = items.loc[m["item_id"]] if m["item_id"] in items.index else None
+        nm = ("%s %s" % (it["brand"], it["name"]) if it is not None else m["item_id"]); un = it["unit"] if it is not None else ""
+        if m["type"] == "production": made[(nm, un)] = made.get((nm, un), 0.0) + f(m["qty"])
+        elif m["type"] == "dispatch":
+            p = " ".join(str(m["party"]).split()) or "(no customer)"; sent.setdefault(p, {}); sent[p][(nm, un)] = sent[p].get((nm, un), 0.0) + abs(f(m["qty"]))
+    t = ["Evergreen Stock summary, " + day, ""]
+    t.append("MADE TODAY"); t += ["- %s %s %s" % (fmt(q), u, n) for (n, u), q in sorted(made.items())] or ["- nothing"]
+    t += ["", "SENT TODAY"]
+    for p, d in sorted(sent.items()): t.append(p); t += ["  - %s %s %s" % (fmt(q), u, n) for (n, u), q in sorted(d.items())]
+    if not sent: t.append("- nothing")
+    pend = pending_orders(store); t += ["", "PENDING ORDERS (%d lines)" % len(pend)]
+    for c, g in pend.groupby("Customer"): t.append("%s: %s" % (c, "; ".join("%s %s %s" % (fmt(r.Pending), r.Unit, r.Item.split(" | ")[-1]) for r in g.itertuples())))
+    return "\n".join(t)
 
 # ---------- items / lists / users ----------
 def add_item(store, category, brand, item, spec, unit, price=0.0, min_level=0.0):

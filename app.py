@@ -10,7 +10,7 @@ import importlib
 import logic as L
 import wa
 import store as _store
-RELEASE = "2026-11-27-d"        # change on every release; it makes the app reload its own parts after an update
+RELEASE = "2026-11-27-e"        # change on every release; it makes the app reload its own parts after an update
 if getattr(L, "LOGIC_VERSION", None) != RELEASE:
     importlib.reload(_store); importlib.reload(L)
 from store import Store, LocalBackend, SheetsBackend, today, new_id, SCHEMA
@@ -30,15 +30,15 @@ header[data-testid="stHeader"]{background:transparent}
 .eg-hero .s{font-size:.82rem;opacity:.85;margin-top:.15rem}
 .eg-hero .pill{background:rgba(255,255,255,.16);border:1px solid rgba(255,255,255,.3);border-radius:999px;padding:.3rem .75rem;font-size:.8rem;font-weight:600;white-space:nowrap}
 /* page menu as pills */
-.st-key-page div[role="radiogroup"]{flex-wrap:nowrap!important;overflow-x:auto;gap:.4rem!important;padding:.2rem .1rem .5rem;scrollbar-width:none}
-.st-key-page div[role="radiogroup"]::-webkit-scrollbar{display:none}
-.st-key-page div[role="radiogroup"]>div{flex:0 0 auto}
-.st-key-page label[data-testid="stRadioOption"],.st-key-page label[data-baseweb="radio"]{background:var(--card);border:1px solid var(--line);border-radius:999px;padding:.42rem .95rem;margin:0;white-space:nowrap;cursor:pointer;transition:all .15s;box-shadow:0 1px 2px rgba(0,0,0,.04);flex:0 0 auto}
-.st-key-page label[data-testid="stRadioOption"]>div>div:first-child,.st-key-page label[data-baseweb="radio"]>div:first-child{display:none}
-.st-key-page label p{font-size:.9rem;font-weight:500;color:var(--ink);white-space:nowrap}
-.st-key-page label[data-testid="stRadioOption"]:hover,.st-key-page label[data-baseweb="radio"]:hover{border-color:var(--g2)}
-.st-key-page label[data-selected="true"],.st-key-page label:has(input:checked){background:var(--g2);border-color:var(--g2);box-shadow:0 4px 12px rgba(27,127,75,.3)}
-.st-key-page label[data-selected="true"] p,.st-key-page label:has(input:checked) p{color:#fff;font-weight:600}
+.st-key-menu div[role="radiogroup"]{flex-wrap:nowrap!important;overflow-x:auto;gap:.4rem!important;padding:.2rem .1rem .5rem;scrollbar-width:none}
+.st-key-menu div[role="radiogroup"]::-webkit-scrollbar{display:none}
+.st-key-menu div[role="radiogroup"]>div{flex:0 0 auto}
+.st-key-menu label[data-testid="stRadioOption"],.st-key-menu label[data-baseweb="radio"]{background:var(--card);border:1px solid var(--line);border-radius:999px;padding:.42rem .95rem;margin:0;white-space:nowrap;cursor:pointer;transition:all .15s;box-shadow:0 1px 2px rgba(0,0,0,.04);flex:0 0 auto}
+.st-key-menu label[data-testid="stRadioOption"]>div>div:first-child,.st-key-menu label[data-baseweb="radio"]>div:first-child{display:none}
+.st-key-menu label p{font-size:.9rem;font-weight:500;color:var(--ink);white-space:nowrap}
+.st-key-menu label[data-testid="stRadioOption"]:hover,.st-key-menu label[data-baseweb="radio"]:hover{border-color:var(--g2)}
+.st-key-menu label[data-selected="true"],.st-key-menu label:has(input:checked){background:var(--g2);border-color:var(--g2);box-shadow:0 4px 12px rgba(27,127,75,.3)}
+.st-key-menu label[data-selected="true"] p,.st-key-menu label:has(input:checked) p{color:#fff;font-weight:600}
 /* cards */
 div[data-testid="stMetric"]{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:.8rem 1rem;box-shadow:0 2px 8px rgba(23,38,29,.05)}
 div[data-testid="stMetricValue"]{font-size:1.5rem;font-weight:700;color:var(--g1)}
@@ -64,6 +64,7 @@ div[data-baseweb="tab-highlight"]{background:var(--g2);height:3px;border-radius:
 h3,h2{letter-spacing:-.01em;color:var(--ink)}
 div[data-testid="stAlert"]{border-radius:12px}
 hr{border-color:var(--line)}
+@media(min-width:900px){.st-key-menu div[role="radiogroup"]{flex-wrap:wrap!important;overflow:visible!important}}
 @media(max-width:640px){div[data-testid="stHorizontalBlock"]:has(div[data-testid="stMetric"]){flex-wrap:nowrap!important;gap:.5rem!important}div[data-testid="stHorizontalBlock"]:has(div[data-testid="stMetric"])>div{min-width:0!important;flex:1 1 0!important}div[data-testid="stMetric"]{padding:.55rem .6rem}div[data-testid="stMetricValue"]{font-size:.92rem}div[data-testid="stMetricLabel"] *{white-space:normal!important;overflow:visible!important;text-overflow:clip!important}div[data-testid="stMetricLabel"] p{font-size:.62rem}.block-container{padding-left:.8rem;padding-right:.8rem}.eg-hero .t{font-size:1.15rem}.eg-hero{padding:.8rem .9rem}}
 </style>""", unsafe_allow_html=True)
 
@@ -295,6 +296,17 @@ def screen_stock():
     if not low.empty:
         with st.expander("⚠️ Below minimum (%d)" % len(low), expanded=True):
             st.dataframe(low[["brand", "name", "unit", "good", "min_level"]].rename(columns={"brand": "Brand", "name": "Item", "unit": "Unit", "good": "In stock", "min_level": "Minimum"}), hide_index=True, **WIDE)
+    po = L.pending_orders(S)
+    if not po.empty:
+        late = int((po["Days_left"].fillna(1) < 0).sum())
+        with st.expander("📦 Pending orders (%d lines%s)" % (len(po), ", %d late" % late if late else ""), expanded=bool(late)):
+            po = po.copy(); po["When"] = po["Days_left"].map(lambda d: "" if d is None or d != d else ("%d day(s) late" % -d if d < 0 else ("due today" if d == 0 else "in %d day(s)" % d)))
+            st.dataframe(po[["Customer", "Category", "Item", "Pending", "Unit", "Needed_by", "When"]].rename(columns={"Needed_by": "Needed by"}), hide_index=True, **WIDE, column_config={"Pending": st.column_config.NumberColumn(format="%g")})
+    if CAN_MANAGE:
+        with st.expander("📋 Today's summary, ready to copy"):
+            st.code(L.daily_summary(S), language=None)
+    with st.expander("↩️ My latest entries (undo a mistake)"):
+        recent(["production", "dispatch", "inward", "opening", "return", "raw_in", "raw_use", "waste"], n=10, mine_only=True)
     tm = L.today_movement(S.rows("Items"), S.rows("Moves"))
     with st.expander("Today's movement (%d items)" % len(tm), expanded=not tm.empty):
         if tm.empty: st.caption("Nothing recorded today yet.")
@@ -383,21 +395,74 @@ def screen_inward():
     recent(["inward"])
 
 
+def draft_restore(screen, pre_keys):
+    """Once per visit: put back what was half-typed on this screen (stored per person in the Drafts tab)."""
+    fl = "_dr_" + screen
+    if st.session_state.get(fl): return
+    st.session_state[fl] = True
+    try: dr = L.draft_get(S, ME, screen)
+    except Exception: dr = None
+    if not dr: return
+    ver = st.session_state.get(pre_keys[0] + "_ver", 0) if pre_keys else 0
+    for k, v in dr.items():
+        k = k.replace("@v", str(ver))
+        if k not in st.session_state: st.session_state[k] = v
+    st.session_state["_dr_back_" + screen] = True
+
+def draft_save(screen, keys, pre=None):
+    """After the widgets: write what is typed so far, only when it changed. Empty = clear."""
+    ver = st.session_state.get(pre + "_ver", 0) if pre else 0
+    snap = {}
+    for k in keys:
+        if k in st.session_state:
+            v = st.session_state[k]
+            if isinstance(v, (str, int, float, bool)) and v not in ("", None): snap[k] = v
+    if pre:
+        for k, v in list(st.session_state.items()):
+            if k.startswith(pre + "_") and k.endswith("_%d" % ver) and isinstance(v, (str, int, float, bool)) and v not in ("", None): snap[k[:-len(str(ver))] + "@v"] = v
+        for k in (pre + "_c", pre + "_b", pre + "_ct", pre + "_bt"):
+            v = st.session_state.get(k)
+            if isinstance(v, str) and v: snap[k] = v
+    key = "_dl_" + screen
+    if st.session_state.get(key) == snap: return
+    st.session_state[key] = snap
+    try: L.draft_put(S, ME, screen, snap or None)
+    except Exception as e: act("draft_error", str(e)[:120], "error")
+
+def draft_banner(screen, keys, pre=None):
+    if st.session_state.get("_dr_back_" + screen):
+        a, b = st.columns([4, 1]); a.info("What you had typed here before was brought back. Check it, then save. Or press Discard.")
+        if b.button("Discard", key="drd_" + screen):
+            for k in list(st.session_state.keys()):
+                if k in keys or (pre and k.startswith(pre + "_")): st.session_state.pop(k, None)
+            st.session_state["_dr_back_" + screen] = False; st.session_state["_dl_" + screen] = {}
+            try: L.draft_put(S, ME, screen, None)
+            except Exception: pass
+            st.rerun()
+
+
 def screen_production():
     items, _, tab = load()
     st.subheader("Production")
+    PK = ["p_qty", "p_shift", "p_mach", "p_note"]
+    draft_restore("production", ["prod"]); draft_banner("production", PK, "prod")
     st.caption("Making something that is not in the list yet? Pick 'Other (type it)' in Category, Brand or Item. It is added as a new product when you save.")
     it, new, unit = entry_picker("prod", items, tab, kinds=["finished"])
     machines = L.list_values(S.rows("Lists"), "machine")
-    kept = combo("Kept aside for customer (optional)", L.all_parties(S), "p_kept", "Type name, or leave empty for normal stock")
-    with st.form("prod", clear_on_submit=True):
-        qty = qty_box("Quantity made", unit=unit)
-        a, b, c = st.columns(3)
-        shift = a.selectbox("Shift", ["", "A", "B"]); mach = b.selectbox("Machine (optional)", [""] + machines); d = c.date_input("Date", value=date.today())
-        note = st.text_input("Note (optional)")
-        if st.form_submit_button("Save production"):
-            iid = resolve_item(it, new)
-            if iid and run(L.add_production, ME, iid, qty, str(d), shift, mach, note, nonce("prod"), (kept or "").strip(), ok="Saved %s" % L.fmt(qty)): burn("prod"); reset_picker("prod"); st.rerun()
+    qty = qty_box("Quantity made", key="p_qty", unit=unit)
+    a, b, c = st.columns(3)
+    shift = a.selectbox("Shift", ["", "A", "B"], key="p_shift"); mach = b.selectbox("Machine (optional)", [""] + machines, key="p_mach"); d = c.date_input("Date", value=date.today(), max_value=date.today(), key="p_date")
+    note = st.text_input("Note (optional)", key="p_note")
+    if st.button("Save production", type="primary", key="p_save"):
+        iid = resolve_item(it, new)
+        if iid and run(L.add_production, ME, iid, qty, str(d), shift, mach, note, nonce("prod"), ok="Saved %s" % L.fmt(qty)):
+            burn("prod"); reset_picker("prod")
+            for k in ("p_qty", "p_note"): st.session_state.pop(k, None)
+            st.session_state["_dl_production"] = {}
+            try: L.draft_put(S, ME, "production", None)
+            except Exception: pass
+            st.session_state["_dr_back_production"] = False; st.rerun()
+    draft_save("production", PK, "prod")
     recent(["production"])
 
 
@@ -521,8 +586,13 @@ def screen_orders():
         tp = L.to_produce(S)
         if tp.empty: st.info("No open orders.")
         else:
-            st.dataframe(tp.rename(columns={"item": "Item", "brand": "Brand", "unit": "Unit", "ordered": "Ordered", "in_stock": "In stock", "to_make": "Make"}).drop(columns=["id"]),
-                         hide_index=True, **WIDE, column_config={c: st.column_config.NumberColumn(format="%g") for c in ["Ordered", "In stock", "Make"]})
+            view = st.radio("Show", ["By item (what to make)", "By customer (who wants what)"], horizontal=True, key="tp_view", label_visibility="collapsed")
+            if view.startswith("By item"):
+                st.dataframe(tp.rename(columns={"category": "Category", "item": "Item", "brand": "Brand", "unit": "Unit", "customers": "Customers", "ordered": "Ordered", "in_stock": "In stock", "to_make": "Make"}).drop(columns=["id"])[["Category", "Brand", "Item", "Unit", "Customers", "Ordered", "In stock", "Make"]],
+                             hide_index=True, **WIDE, column_config={c: st.column_config.NumberColumn(format="%g") for c in ["Ordered", "In stock", "Make"]})
+            else:
+                po = L.pending_orders(S).sort_values(["Customer", "Category", "Item"])
+                st.dataframe(po[["Customer", "Category", "Item", "Pending", "Unit", "Needed_by"]].rename(columns={"Needed_by": "Needed by"}), hide_index=True, **WIDE, column_config={"Pending": st.column_config.NumberColumn(format="%g")})
     with b:
         parties = L.all_parties(S)
         own = st.checkbox("Just for our own stock (safety stock, no customer)", key="o_own")
@@ -547,6 +617,36 @@ def screen_orders():
             if c2.button("Done", key="od" + o["id"]): L.set_order_status(S, o["id"], "done"); act("order_done", o["id"]); st.rerun()
             if c3.button("Drop", key="oc" + o["id"]): L.set_order_status(S, o["id"], "cancelled"); act("order_dropped", o["id"]); st.rerun()
         if not n: st.caption("None open.")
+
+
+def screen_customers():
+    st.subheader("Customers")
+    parties = L.all_parties(S)
+    c = combo("Customer", parties, "cs_party", "Type or choose a customer")
+    if not (c or "").strip():
+        po = L.pending_orders(S)
+        st.caption("Choose a customer to see what is pending and everything sent to them." if not po.empty else "Choose a customer to see everything sent to them.")
+        if not po.empty:
+            g = po.groupby("Customer", as_index=False).agg(Lines=("Item", "count"), Pending_qty=("Pending", "sum"), Earliest_due=("Needed_by", "min"))
+            st.markdown("**Who has pending orders**"); st.dataframe(g.rename(columns={"Pending_qty": "Pending qty", "Earliest_due": "Earliest due"}), hide_index=True, **WIDE, column_config={"Pending qty": st.column_config.NumberColumn(format="%g")})
+        return
+    c = c.strip()
+    po = L.pending_orders(S, c)
+    h = L.customer_history(S.rows("Items"), S.rows("Moves"), "", "2000-01-01", "2999-12-31")
+    h = h[h["Customer"].map(lambda x: L.party_match(x, c))] if not h.empty else h
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Pending lines", len(po)); m2.metric("Dispatches", int(h[["Date", "Vehicle"]].drop_duplicates().shape[0]) if not h.empty else 0); m3.metric("Last sent", h["Date"].max() if not h.empty else "-")
+    st.markdown("**Pending orders**")
+    if po.empty: st.caption("Nothing pending.")
+    else: st.dataframe(po[["Category", "Item", "Pending", "Unit", "Needed_by", "Days_left"]].rename(columns={"Needed_by": "Needed by", "Days_left": "Days left"}), hide_index=True, **WIDE, column_config={"Pending": st.column_config.NumberColumn(format="%g")})
+    st.markdown("**Total sent, by item**")
+    if h.empty: st.caption("Nothing sent yet.")
+    else:
+        tot = h.groupby(["Item", "Unit"], as_index=False)["Qty"].sum().sort_values("Qty", ascending=False)
+        st.dataframe(tot, hide_index=True, **WIDE, column_config={"Qty": st.column_config.NumberColumn(format="%g")})
+        with st.expander("Every dispatch (%d lines)" % len(h)):
+            st.dataframe(h.drop(columns=["Customer"]), hide_index=True, **WIDE, column_config={"Qty": st.column_config.NumberColumn(format="%g")})
+        st.download_button("Download (CSV)", h.to_csv(index=False).encode(), "customer-%s.csv" % "".join(ch for ch in c if ch.isalnum())[:20], "text/csv", key="cs_dl")
 
 
 def screen_returns():
@@ -982,6 +1082,13 @@ def screen_fix():
     st.caption("Note: fixing a dispatch does not change the orders it ticked off. A return needs to be entered on the Returns screen.")
 
 
+def wa_draft_done():
+    t = st.session_state.get("wa_txt")
+    st.session_state["_dl_whatsapp"] = {"wa_txt": t} if t else {}
+    try: L.draft_put(S, ME, "whatsapp", None)
+    except Exception: pass
+
+
 def wa_review(parsed, tag):
     """Show what was read, one line at a time, for the person to check and correct. Saves only when the button is pressed."""
     items, _, tab = load()
@@ -1029,7 +1136,7 @@ def wa_review(parsed, tag):
             try:
                 for i, q in merged.items():
                     L.add_production(S, ME, i, q, str(dt), shift, "", "From WhatsApp", "wa-%s-%s-%s" % (dt, shift or "x", i))
-                act("wa_production", "%d lines %s %s" % (len(merged), dt, shift)); st.success("Saved %d production line(s) for %s shift %s." % (len(merged), dt, shift or "-"))
+                wa_draft_done(); act("wa_production", "%d lines %s %s" % (len(merged), dt, shift)); st.success("Saved %d production line(s) for %s shift %s." % (len(merged), dt, shift or "-"))
             except L.Problem as e: st.error(str(e))
             except Exception as e: st.error("Could not save. (%s)" % str(e)[:160])
     else:
@@ -1042,7 +1149,7 @@ def wa_review(parsed, tag):
             else:
               try:
                 L.add_dispatch_trip(S, ME, drops, vehicle, str(dt), "From WhatsApp", neg, trip, tno)
-                act("wa_dispatch", "%d customers %s" % (len(drops), dt)); st.success("Dispatch saved."); st.session_state["last_slip"] = trip + ".0"; slip_button(trip + ".0", "Download vehicle slip (PDF)", tag + "_slip")
+                wa_draft_done(); act("wa_dispatch", "%d customers %s" % (len(drops), dt)); st.success("Dispatch saved."); st.session_state["last_slip"] = trip + ".0"; slip_button(trip + ".0", "Download vehicle slip (PDF)", tag + "_slip")
               except L.Problem as e: st.error(str(e))
               except Exception as e: st.error("Could not save. (%s)" % str(e)[:160])
 
@@ -1050,7 +1157,9 @@ def wa_review(parsed, tag):
 def screen_wa():
     st.subheader("From WhatsApp")
     st.caption("Paste a production or dispatch message from WhatsApp. The app shows what it understood, line by line. Nothing is saved until you check it and press Save.")
+    draft_restore("whatsapp", []); draft_banner("whatsapp", ["wa_txt"])
     txt = st.text_area("Paste the message here", height=200, key="wa_txt", placeholder="Production details\nDate- 12/11/26\nShift-B\n\n8mil 7.3kg 20cm 800mtrs(evg) -06rolls ...")
+    draft_save("whatsapp", ["wa_txt"])
     if txt.strip():
         kind = st.radio("This is a", ["Production", "Dispatch"], index=0 if wa.guess_kind(txt) == "production" else 1, horizontal=True, key="wa_kind")
         parsed = wa.parse_production(txt) if kind == "Production" else wa.parse_dispatch(txt)
@@ -1059,7 +1168,7 @@ def screen_wa():
         else: wa_review(parsed, "wp" + hashlib.md5((kind + txt).encode()).hexdigest()[:6])
 
 
-SCREENS = {"Stock": screen_stock, "Inward": screen_inward, "Add Stock": screen_addstock, "Production": screen_production, "Dispatch": screen_dispatch, "WhatsApp": screen_wa, "Orders": screen_orders, "Returns": screen_returns,
+SCREENS = {"Customers": screen_customers, "Stock": screen_stock, "Inward": screen_inward, "Add Stock": screen_addstock, "Production": screen_production, "Dispatch": screen_dispatch, "WhatsApp": screen_wa, "Orders": screen_orders, "Returns": screen_returns,
            "Raw & Waste": screen_raw, "Count": screen_count, "Reports": screen_reports, "Fix entries": screen_fix, "Admin": screen_admin}
 
 st.markdown('<div class="eg-hero"><div><div class="t">🌿 Evergreen Stock%s</div><div class="s">Evergreen Irrigation · %s</div></div><div class="pill">%s</div></div>' % ("" if LIVE else " · TRIAL", date.today().strftime("%a, %d %b %Y"), html.escape(str(ME))), unsafe_allow_html=True)
@@ -1068,12 +1177,19 @@ with st.sidebar:
     if st.button("Sign out"):
         act("logout"); L.end_session(S, st.session_state.get("tok")); set_cookie(None); st.session_state.clear(); st.query_params.clear(); st.rerun()
 nav = L.NAV[ROLE]
-page = st.radio("Go to", nav, horizontal=True, label_visibility="collapsed", key="page")
+main = [p for p in nav if p in L.NAV_MAIN]; more = [p for p in nav if p not in L.NAV_MAIN]
+with st.container(key="menu"):
+    page = st.radio("Go to", main + (["More ▾"] if more else []), horizontal=True, label_visibility="collapsed", key="page")
+    if page == "More ▾":
+        page = st.radio("More screens", more, horizontal=True, label_visibility="collapsed", key="page2")
 if st.session_state.get("_lastpage") != page:    # one line each time someone opens a different screen
     st.session_state["_lastpage"] = page; act("view", page)
 try:
     SCREENS[page]()
 except Exception as e:  # never show a stack trace to staff
     act("screen_error", str(e)[:200], "error")
+    for _d in ("production", "whatsapp"):
+        try: L.draft_put(S, ME, _d, None)
+        except Exception: pass
     st.error("Something went wrong. Please refresh the page. (%s)" % str(e)[:140])
     if os.environ.get("STOCK_DEBUG"): raise
