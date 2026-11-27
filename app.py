@@ -10,7 +10,7 @@ import importlib
 import logic as L
 import wa
 import store as _store
-RELEASE = "2026-11-27-i"        # change on every release; it makes the app reload its own parts after an update
+RELEASE = "2026-11-27-j"        # change on every release; it makes the app reload its own parts after an update
 if getattr(L, "LOGIC_VERSION", None) != RELEASE or "Fleet" not in _store.SCHEMA:
     importlib.reload(_store); importlib.reload(L)
 from store import Store, LocalBackend, SheetsBackend, today, new_id, SCHEMA
@@ -684,25 +684,38 @@ def screen_transport():
             csv = pd.DataFrame([dict(Date=x["date"], Vehicle=x["vehicle"], Trip=x["trip"], Place=x["party"], Transporter=x["transporter"], Amount="" if x["amount"] is None else x["amount"]) for x in dr])
             st.download_button("Download (CSV)", csv.to_csv(index=False).encode(), "transport.csv", "text/csv", key="tl_dl")
     with t2:
-        c1, c2 = st.columns(2)
-        only = c1.checkbox("Only where cost is not decided", value=True, key="ec_only")
-        days = c2.selectbox("Look back", [7, 14, 30, 60], index=1, format_func=lambda n: "%d days" % n, key="ec_days")
+        c1, c2, c3 = st.columns([2, 2, 2])
+        tfil = c1.selectbox("Transporter", ["All"] + [n for n in names if n != L.PERSONAL] + ["Not allotted"], key="ec_tr")
+        only = c2.checkbox("Only where cost is not decided", value=True, key="ec_only")
+        days = c3.selectbox("Look back", [7, 14, 30, 60], index=1, format_func=lambda n: "%d days" % n, key="ec_days")
         dr = L.freight_drops(S, str(date.today() - timedelta(days=days)), str(date.today()))
+        if tfil == "Not allotted": dr = [x for x in dr if not x["transporter"]]
+        elif tfil != "All": dr = [x for x in dr if x["transporter"] == tfil]
+        allrows = dr
         if only: dr = [x for x in dr if x["amount"] is None]
         if not dr: st.success("Nothing to fill here.")
-        for x in dr[:60]:
-            with st.container(border=True):
-                st.write("**%s** · %s · %s" % (x["party"], x["vehicle"], x["date"]))
-                a, b, c = st.columns([2, 2, 1])
-                opts = names
-                tsel = a.selectbox("Transporter", opts, index=opts.index(x["transporter"]) if x["transporter"] in opts else None, placeholder="Choose", key="et_" + x["ref"])
-                amt = b.number_input("Cost (₹)", min_value=0.0, value=x["amount"], step=100.0, format="%g", key="ea_" + x["ref"], placeholder="Not decided")
-                c.write("")
-                if c.button("Save", key="es_" + x["ref"]):
-                    if run(L.set_freight, ME, x["ref"], x["date"], x["vehicle"], x["party"], tsel, amt, x["note"], ok="Saved"):
-                        if tsel: L.set_transporter(S, x["vehicle"], tsel)
-                        st.rerun()
-        if len(dr) > 60: st.caption("Showing the latest 60. Fill these, then the older ones appear.")
+        shown = 0
+        for grp in [n for n in names if n != L.PERSONAL] + [""]:
+            gl = [x for x in dr if x["transporter"] == grp]
+            if not gl: continue
+            full = [x for x in allrows if x["transporter"] == grp]
+            st.markdown("#### %s" % (grp or "Transporter not allotted"))
+            st.caption("%d to fill · %d drops in these dates · entered so far %s" % (len(gl), len(full), L.money(sum(x["amount"] or 0 for x in full))))
+            for x in gl:
+                if shown >= 60: break
+                shown += 1
+                with st.container(border=True):
+                    st.write("**%s** · %s · %s" % (x["party"], x["vehicle"], x["date"]))
+                    a, b, c = st.columns([2, 2, 1])
+                    opts = names
+                    tsel = a.selectbox("Transporter", opts, index=opts.index(x["transporter"]) if x["transporter"] in opts else None, placeholder="Choose", key="et_" + x["ref"])
+                    amt = b.number_input("Cost (₹)", min_value=0.0, value=x["amount"], step=100.0, format="%g", key="ea_" + x["ref"], placeholder="Not decided")
+                    c.write("")
+                    if c.button("Save", key="es_" + x["ref"]):
+                        if run(L.set_freight, ME, x["ref"], x["date"], x["vehicle"], x["party"], tsel, amt, x["note"], ok="Saved"):
+                            if tsel: L.set_transporter(S, x["vehicle"], tsel)
+                            st.rerun()
+        if len(dr) > 60: st.caption("Showing the first 60. Fill these, then the rest appear.")
     with t3:
         st.caption("Which transporter owns which vehicle. Once set, the Dispatch screen picks the transporter by itself when you type that vehicle number.")
         known = []

@@ -4,7 +4,7 @@ import pandas as pd
 from store import SCHEMA, new_id, stamp, today, hash_pin, check_hash, token_hash, new_token, now
 from datetime import timedelta, date as _date
 
-LOGIC_VERSION = "2026-11-27-i"
+LOGIC_VERSION = "2026-11-27-j"
 BUCKETS = ["good", "hold", "bgrade", "recycle", "scrap"]
 BUCKET_NAME = {"good": "Good stock", "hold": "On hold (returns)", "bgrade": "B-grade", "recycle": "To recycle", "scrap": "Scrap"}
 ROLES = ["admin", "supervisor", "operator", "loader", "sales"]
@@ -712,11 +712,12 @@ def draft_put(store, user, screen, data):
 
 # ---------- transport: who carried what, where, and what it cost ----------
 TRANSPORTERS = ["Jayanna", "Byre Gowda"]
+PERSONAL = "Own vehicle (no cost)"      # your own car or a vehicle that carries no transport cost
 
 def vkey(v): return "".join(str(v).upper().split())
 
 def transporter_names(store):
-    return sorted(set(TRANSPORTERS) | {r["transporter"] for r in store.rows("Fleet") if r["transporter"]} | {r["transporter"] for r in store.rows("Freight") if r["transporter"]}, key=str.lower)
+    return sorted(set(TRANSPORTERS) | {PERSONAL} | {r["transporter"] for r in store.rows("Fleet") if r["transporter"]} | {r["transporter"] for r in store.rows("Freight") if r["transporter"]}, key=str.lower)
 
 def transporter_of(store, vehicle):
     t = ""
@@ -742,7 +743,7 @@ def set_freight(store, user, ref, day, vehicle, party, transporter, amount, note
     if r: store.update("Freight", r["_r"], row)
     else: store.append("Freight", [row])
 
-def freight_drops(store, d1, d2):
+def freight_drops(store, d1, d2, with_own=False):
     """Every dispatch drop between d1 and d2 with its transporter and cost. One row per customer on one trip."""
     fr = {r["ref"]: r for r in store.rows("Freight")}; g = {}
     for m in store.rows("Moves"):
@@ -755,4 +756,5 @@ def freight_drops(store, d1, d2):
         tr = (x["transporter"] if x and x["transporter"] else "") or transporter_of(store, e["vehicle"])
         amt = None if (not x or x["amount"] in ("", None)) else f(x["amount"])
         out.append(dict(e, transporter=tr, amount=amt, note=x["note"] if x else ""))
+    if not with_own: out = [x for x in out if x["transporter"] != PERSONAL]
     return sorted(out, key=lambda r: (r["date"], r["vehicle"], r["trip"], r["party"]), reverse=True)
