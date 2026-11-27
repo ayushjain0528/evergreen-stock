@@ -485,7 +485,8 @@ def screen_orders():
                          hide_index=True, **WIDE, column_config={c: st.column_config.NumberColumn(format="%g") for c in ["Ordered", "In stock", "Make"]})
     with b:
         parties = L.all_parties(S)
-        party = combo("Customer", parties, "o_party", "Type customer name")
+        own = st.checkbox("Just for our own stock (safety stock, no customer)", key="o_own")
+        party = L.OWN_STOCK if own else combo("Customer", parties, "o_party", "Type customer name")
         st.caption("Customised product that is not in the list? Pick 'Other (type it)' in Category, Brand or Item. It is added as a new product when you save the order, and then shows in To produce, Production and Dispatch.")
         it, new, unit = entry_picker("ord", items, tab, kinds=["finished"])
         with st.form("ord", clear_on_submit=True):
