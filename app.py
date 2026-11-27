@@ -10,7 +10,7 @@ import importlib
 import logic as L
 import wa
 import store as _store
-RELEASE = "2026-11-27-g"        # change on every release; it makes the app reload its own parts after an update
+RELEASE = "2026-11-27-h"        # change on every release; it makes the app reload its own parts after an update
 if getattr(L, "LOGIC_VERSION", None) != RELEASE:
     importlib.reload(_store); importlib.reload(L)
 from store import Store, LocalBackend, SheetsBackend, today, new_id, SCHEMA
@@ -44,7 +44,7 @@ header[data-testid="stHeader"]{background:transparent}
 .sh table{width:100%;border-collapse:collapse;font-size:.82rem}
 .sh th{text-align:left;color:var(--mute);font-weight:600;font-size:.72rem;text-transform:uppercase;letter-spacing:.03em;padding:.35rem .4rem;border-bottom:2px solid var(--line)}
 .sh td{padding:.38rem .4rem;border-bottom:1px solid var(--line);vertical-align:top;word-break:break-word;color:var(--ink)}
-.sh .sm{color:var(--mute);font-size:.72em}.sh td:first-child{width:34%}.sh .n{text-align:right;white-space:nowrap}.sh .b{font-weight:700;color:#b3261e}
+.sh .sm{color:var(--mute);font-size:.72em}.sh .n{text-align:right;white-space:nowrap}.sh .b{font-weight:700;color:#b3261e}
 .sh tr:nth-child(even) td{background:#f8fbf9}
 @media(max-width:640px){.sh table{font-size:.72rem}.sh td,.sh th{padding:.3rem .25rem}}
 /* cards */
@@ -558,6 +558,13 @@ def screen_dispatch():
         neg = st.checkbox("Allow sending more than stock (admin only)", value=False) if IS_ADMIN else False
         tno = trip_no_pick(veh, str(ddate), "d_tno")
         note = st.text_input("Note (optional)", key="d_note")
+        tr = None; costs = {}
+        if CAN_MANAGE:
+            tnames = L.transporter_names(S); cur = L.transporter_of(S, veh) if (veh or "").strip() else ""
+            tr = st.selectbox("Transporter", tnames, index=tnames.index(cur) if cur in tnames else None, placeholder="Which transporter's vehicle is this?", key="d_tr_" + L.vkey(veh or ""))
+            with st.expander("Transport cost (optional, you can also fill it later in Transport)"):
+                for gp in groups:
+                    costs[gp] = st.number_input("Cost to %s (₹)" % (gp or "this load"), min_value=0.0, value=None, step=100.0, format="%g", key="d_cost_" + gp, placeholder="Decide later")
         ticked = {}
         names = items.set_index("id")["name"].to_dict()
         for gp in groups:
@@ -571,6 +578,12 @@ def screen_dispatch():
             trip = nonce("disp")
             drops = [(gp, [(c[0], c[1]) for c in cart if c[4] == gp]) for gp in groups]
             if run(L.add_dispatch_trip, ME, drops, veh or "", str(ddate), note, neg, trip, tno, ok="Dispatch saved"):
+                if CAN_MANAGE and (veh or "").strip():
+                    try:
+                        if tr: L.set_transporter(S, veh, tr)
+                        for k, (gp, lines) in enumerate(drops):
+                            if tr or costs.get(gp) is not None: L.set_freight(S, ME, "%s.%d" % (trip, k), str(ddate), " ".join(veh.upper().split()), gp, tr, costs.get(gp))
+                    except Exception as e: act("freight_error", str(e)[:120], "error")
                 msg = ""; n_ord = 0; n_fin = 0
                 for gp, lines in drops:
                     if not ticked.get(gp): continue
@@ -587,9 +600,9 @@ def screen_dispatch():
     st.divider(); recent(["dispatch"])
 
 
-def share_table(title, headers, rows, num=(), bold=(), sub=""):
+def share_table(title, headers, rows, num=(), bold=(), sub="", w0="34%"):
     """A plain table that shows every row on the page at once (no inner scrolling), so one screenshot can be shared."""
-    th = "".join('<th class="%s">%s</th>' % ("n" if i in num else "", html.escape(h)) for i, h in enumerate(headers))
+    th = "".join('<th class="%s"%s>%s</th>' % ("n" if i in num else "", ' style="width:%s"' % w0 if i == 0 else "", html.escape(h)) for i, h in enumerate(headers))
     body = ""
     for r in rows:
         body += "<tr>" + "".join('<td class="%s%s">%s</td>' % ("n" if i in num else "", " b" if i in bold else "", "<br>".join(('<span class="sm">%s</span>' % html.escape(p)) if k else html.escape(p) for k, p in enumerate(str(c).split("\n")))) for i, c in enumerate(r)) + "</tr>"
@@ -637,6 +650,74 @@ def screen_orders():
             if c2.button("Done", key="od" + o["id"]): L.set_order_status(S, o["id"], "done"); act("order_done", o["id"]); st.rerun()
             if c3.button("Drop", key="oc" + o["id"]): L.set_order_status(S, o["id"], "cancelled"); act("order_dropped", o["id"]); st.rerun()
         if not n: st.caption("None open.")
+
+
+def screen_transport():
+    st.subheader("Transport")
+    names = L.transporter_names(S)
+    t1, t2, t3 = st.tabs(["Transporter's list", "Enter costs", "Vehicles"])
+    with t1:
+        c1, c2 = st.columns(2)
+        who = c1.selectbox("Transporter", ["All"] + names, key="tl_who")
+        per = c2.selectbox("Period", ["Last 7 days", "Last 14 days", "This month", "Last month", "Pick dates"], key="tl_per")
+        td = date.today()
+        if per == "Last 7 days": d1, d2 = td - timedelta(days=6), td
+        elif per == "Last 14 days": d1, d2 = td - timedelta(days=13), td
+        elif per == "This month": d1, d2 = td.replace(day=1), td
+        elif per == "Last month": d2 = td.replace(day=1) - timedelta(days=1); d1 = d2.replace(day=1)
+        else:
+            a, b = st.columns(2); d1 = a.date_input("From", value=td - timedelta(days=6), key="tl_d1"); d2 = b.date_input("To", value=td, key="tl_d2")
+        dr = [x for x in L.freight_drops(S, str(d1), str(d2)) if who == "All" or x["transporter"] == who]
+        if not dr: st.info("Nothing was dispatched in these dates.")
+        else:
+            dr = sorted(dr, key=lambda r: (r["date"], r["vehicle"], r["trip"], r["party"]))
+            tot = sum(x["amount"] or 0 for x in dr); undec = sum(1 for x in dr if x["amount"] is None)
+            m1, m2, m3 = st.columns(3); m1.metric("Drops", len(dr)); m2.metric("Total cost", L.money(tot)); m3.metric("Cost not decided", undec)
+            rows = []; last = None
+            for x in dr:
+                dk = (x["date"], x["vehicle"], x["trip"])
+                rows.append((x["date"][8:] + "/" + x["date"][5:7] if dk != last else "", x["vehicle"] if dk != last else "", x["party"] + (" (%s)" % x["transporter"] if who == "All" and x["transporter"] else ""), "-" if x["amount"] is None else L.money(x["amount"])))
+                last = dk
+            rows.append(("", "", "TOTAL", L.money(tot)))
+            share_table("Transport list, %s" % (who if who != "All" else "all transporters"), ["Date", "Vehicle", "Went to", "Amount"], rows, num={3}, bold=set(), sub="%s to %s" % (d1.strftime("%d %b"), d2.strftime("%d %b %Y")), w0="13%")
+            st.caption("One page, so you can take a screenshot and share it. A dash means the cost is not decided yet.")
+            csv = pd.DataFrame([dict(Date=x["date"], Vehicle=x["vehicle"], Trip=x["trip"], Place=x["party"], Transporter=x["transporter"], Amount="" if x["amount"] is None else x["amount"]) for x in dr])
+            st.download_button("Download (CSV)", csv.to_csv(index=False).encode(), "transport.csv", "text/csv", key="tl_dl")
+    with t2:
+        c1, c2 = st.columns(2)
+        only = c1.checkbox("Only where cost is not decided", value=True, key="ec_only")
+        days = c2.selectbox("Look back", [7, 14, 30, 60], index=1, format_func=lambda n: "%d days" % n, key="ec_days")
+        dr = L.freight_drops(S, str(date.today() - timedelta(days=days)), str(date.today()))
+        if only: dr = [x for x in dr if x["amount"] is None]
+        if not dr: st.success("Nothing to fill here.")
+        for x in dr[:60]:
+            with st.container(border=True):
+                st.write("**%s** · %s · %s" % (x["party"], x["vehicle"], x["date"]))
+                a, b, c = st.columns([2, 2, 1])
+                opts = names
+                tsel = a.selectbox("Transporter", opts, index=opts.index(x["transporter"]) if x["transporter"] in opts else None, placeholder="Choose", key="et_" + x["ref"])
+                amt = b.number_input("Cost (₹)", min_value=0.0, value=x["amount"], step=100.0, format="%g", key="ea_" + x["ref"], placeholder="Not decided")
+                c.write("")
+                if c.button("Save", key="es_" + x["ref"]):
+                    if run(L.set_freight, ME, x["ref"], x["date"], x["vehicle"], x["party"], tsel, amt, x["note"], ok="Saved"):
+                        if tsel: L.set_transporter(S, x["vehicle"], tsel)
+                        st.rerun()
+        if len(dr) > 60: st.caption("Showing the latest 60. Fill these, then the older ones appear.")
+    with t3:
+        st.caption("Which transporter owns which vehicle. Once set, the Dispatch screen picks the transporter by itself when you type that vehicle number.")
+        known = []
+        for m in reversed(S.rows("Moves")):
+            if m["type"] == "dispatch" and m["vehicle"] and L.vkey(m["vehicle"]) not in [L.vkey(k) for k in known]: known.append(" ".join(m["vehicle"].split()))
+            if len(known) >= 40: break
+        for v in known:
+            a, b = st.columns([2, 2]); a.write("**%s**" % v); cur = L.transporter_of(S, v)
+            sel = b.selectbox("Transporter", names, index=names.index(cur) if cur in names else None, placeholder="Not set", key="vt_" + L.vkey(v), label_visibility="collapsed")
+            if sel and sel != cur: L.set_transporter(S, v, sel); st.rerun()
+        st.markdown("**Add a vehicle or a new transporter**")
+        a, b = st.columns(2); nv = a.text_input("Vehicle number", key="vt_new_v"); nt = b.text_input("Transporter name", key="vt_new_t", placeholder="Type to pick or add")
+        if st.button("Save", key="vt_new_s"):
+            if nv.strip() and nt.strip(): L.set_transporter(S, nv, nt); st.rerun()
+            else: st.error("Type both the vehicle number and the transporter.")
 
 
 def screen_customers():
@@ -1188,7 +1269,7 @@ def screen_wa():
         else: wa_review(parsed, "wp" + hashlib.md5((kind + txt).encode()).hexdigest()[:6])
 
 
-SCREENS = {"Customers": screen_customers, "Stock": screen_stock, "Inward": screen_inward, "Add Stock": screen_addstock, "Production": screen_production, "Dispatch": screen_dispatch, "WhatsApp": screen_wa, "Orders": screen_orders, "Returns": screen_returns,
+SCREENS = {"Transport": screen_transport, "Customers": screen_customers, "Stock": screen_stock, "Inward": screen_inward, "Add Stock": screen_addstock, "Production": screen_production, "Dispatch": screen_dispatch, "WhatsApp": screen_wa, "Orders": screen_orders, "Returns": screen_returns,
            "Raw & Waste": screen_raw, "Count": screen_count, "Reports": screen_reports, "Fix entries": screen_fix, "Admin": screen_admin}
 
 st.markdown('<div class="eg-hero"><div><div class="t">🌿 Evergreen Stock%s</div><div class="s">Evergreen Irrigation · %s</div></div><div class="pill">%s</div></div>' % ("" if LIVE else " · TRIAL", date.today().strftime("%a, %d %b %Y"), html.escape(str(ME))), unsafe_allow_html=True)

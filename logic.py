@@ -4,13 +4,13 @@ import pandas as pd
 from store import SCHEMA, new_id, stamp, today, hash_pin, check_hash, token_hash, new_token, now
 from datetime import timedelta, date as _date
 
-LOGIC_VERSION = "2026-11-27-g"
+LOGIC_VERSION = "2026-11-27-h"
 BUCKETS = ["good", "hold", "bgrade", "recycle", "scrap"]
 BUCKET_NAME = {"good": "Good stock", "hold": "On hold (returns)", "bgrade": "B-grade", "recycle": "To recycle", "scrap": "Scrap"}
 ROLES = ["admin", "supervisor", "operator", "loader", "sales"]
 NAV = {
-    "admin":      ["Stock", "Production", "Dispatch", "Orders", "Customers", "Inward", "Add Stock", "WhatsApp", "Returns", "Raw & Waste", "Count", "Reports", "Fix entries", "Admin"],
-    "supervisor": ["Stock", "Production", "Dispatch", "Orders", "Customers", "Inward", "Add Stock", "WhatsApp", "Returns", "Raw & Waste", "Count", "Reports", "Fix entries"],
+    "admin":      ["Stock", "Production", "Dispatch", "Orders", "Customers", "Inward", "Add Stock", "WhatsApp", "Returns", "Raw & Waste", "Count", "Transport", "Reports", "Fix entries", "Admin"],
+    "supervisor": ["Stock", "Production", "Dispatch", "Orders", "Customers", "Inward", "Add Stock", "WhatsApp", "Returns", "Raw & Waste", "Count", "Transport", "Reports", "Fix entries"],
     "operator":   ["Stock", "Production", "Inward", "Add Stock", "Raw & Waste", "Count"],
     "loader":     ["Stock", "Dispatch", "Customers", "Inward", "Returns"],
     "sales":      ["Stock", "Orders", "Customers", "Returns"],
@@ -708,3 +708,51 @@ def draft_put(store, user, screen, data):
         store.update("Drafts", r["_r"], dict(user=user, screen=screen, data=payload, ts=stamp()))
     elif payload:
         store.append("Drafts", [dict(user=user, screen=screen, data=payload, ts=stamp())])
+
+
+# ---------- transport: who carried what, where, and what it cost ----------
+TRANSPORTERS = ["Jayanna", "Byre Gowda"]
+
+def vkey(v): return "".join(str(v).upper().split())
+
+def transporter_names(store):
+    return sorted(set(TRANSPORTERS) | {r["transporter"] for r in store.rows("Fleet") if r["transporter"]} | {r["transporter"] for r in store.rows("Freight") if r["transporter"]}, key=str.lower)
+
+def transporter_of(store, vehicle):
+    t = ""
+    for r in store.rows("Fleet"):
+        if vkey(r["vehicle"]) == vkey(vehicle): t = r["transporter"]
+    return t
+
+def set_transporter(store, vehicle, name):
+    """Allot a vehicle number to a transporter (the latest allotment wins)."""
+    v = " ".join(str(vehicle).upper().split()); name = " ".join(str(name).split())
+    if not v or not name: return
+    r = next((x for x in store.rows("Fleet") if vkey(x["vehicle"]) == vkey(v)), None)
+    if r:
+        if r["transporter"] != name: store.update("Fleet", r["_r"], dict(vehicle=v, transporter=name, ts=stamp()))
+    else: store.append("Fleet", [dict(vehicle=v, transporter=name, ts=stamp())])
+
+def set_freight(store, user, ref, day, vehicle, party, transporter, amount, note=""):
+    """Cost of one drop (one customer on one trip). amount None/'' = not decided yet."""
+    amt = "" if amount in (None, "") else round(f(amount), 2)
+    if amt != "" and amt < 0: raise Problem("The cost cannot be negative.")
+    row = dict(ref=ref, ts=stamp(), date=day, vehicle=vehicle, party=party, transporter=" ".join(str(transporter or "").split()), amount=amt, note=note, user=user)
+    r = next((x for x in store.rows("Freight") if x["ref"] == ref), None)
+    if r: store.update("Freight", r["_r"], row)
+    else: store.append("Freight", [row])
+
+def freight_drops(store, d1, d2):
+    """Every dispatch drop between d1 and d2 with its transporter and cost. One row per customer on one trip."""
+    fr = {r["ref"]: r for r in store.rows("Freight")}; g = {}
+    for m in store.rows("Moves"):
+        if m["type"] != "dispatch" or str(m["void"]) in ("1", "True", "true", "1.0") or m["bucket"] != "good" or not (d1 <= m["date"] <= d2): continue
+        e = g.setdefault(m["ref"], dict(ref=m["ref"], date=m["date"], vehicle=" ".join(str(m["vehicle"]).split()), party=" ".join(str(m["party"]).split()) or "(no customer named)", trip=str(m["shift"]).strip() or "1", qty=0.0))
+        e["qty"] += abs(f(m["qty"]))
+    out = []
+    for ref, e in g.items():
+        x = fr.get(ref)
+        tr = (x["transporter"] if x and x["transporter"] else "") or transporter_of(store, e["vehicle"])
+        amt = None if (not x or x["amount"] in ("", None)) else f(x["amount"])
+        out.append(dict(e, transporter=tr, amount=amt, note=x["note"] if x else ""))
+    return sorted(out, key=lambda r: (r["date"], r["vehicle"], r["trip"], r["party"]), reverse=True)
