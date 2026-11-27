@@ -9,7 +9,7 @@ import importlib
 import logic as L
 import wa
 import store as _store
-RELEASE = "2026-11-27-a"        # change on every release; it makes the app reload its own parts after an update
+RELEASE = "2026-11-27-b"        # change on every release; it makes the app reload its own parts after an update
 if getattr(L, "LOGIC_VERSION", None) != RELEASE:
     importlib.reload(_store); importlib.reload(L)
 from store import Store, LocalBackend, SheetsBackend, today, new_id, SCHEMA
@@ -485,12 +485,16 @@ def screen_orders():
     with b:
         parties = L.all_parties(S)
         party = combo("Customer", parties, "o_party", "Type customer name")
-        it = pick_item("ord", items, kinds=["finished"])
+        st.caption("Customised product that is not in the list? Pick 'Other (type it)' in Category, Brand or Item. It is added as a new product when you save the order, and then shows in To produce, Production and Dispatch.")
+        it, new, unit = entry_picker("ord", items, tab, kinds=["finished"])
         with st.form("ord", clear_on_submit=True):
-            qty = qty_box("Quantity ordered", unit=(it["unit"] if it is not None else "")); due = st.date_input("Needed by", value=date.today() + timedelta(days=3)); note = st.text_input("Note (optional)")
+            qty = qty_box("Quantity ordered", unit=unit); due = st.date_input("Needed by", value=date.today() + timedelta(days=3)); note = st.text_input("Note (optional)")
             if st.form_submit_button("Save order"):
-                if it is None: st.error("Choose the item first.")
-                elif run(L.add_order, ME, party or "", it["id"], qty, str(due), note, ok="Order saved"): reset_picker("ord"); st.rerun()
+                if it is None and new is None: st.error("Choose the item first.")
+                elif not qty: st.error("Enter the quantity.")
+                else:
+                    iid = resolve_item(it, new)
+                    if iid and run(L.add_order, ME, party or "", iid, qty, str(due), note, ok="Order saved"): reset_picker("ord"); st.rerun()
         st.markdown("**Open orders**")
         names = items.set_index("id")["name"].to_dict(); n = 0
         for o in reversed(S.rows("Orders")):
