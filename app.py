@@ -10,7 +10,7 @@ import importlib
 import logic as L
 import wa
 import store as _store
-RELEASE = "2026-11-27-n"        # change on every release; it makes the app reload its own parts after an update
+RELEASE = "2026-11-27-o"        # change on every release; it makes the app reload its own parts after an update
 if getattr(L, "LOGIC_VERSION", None) != RELEASE or "Fleet" not in _store.SCHEMA:
     importlib.reload(_store); importlib.reload(L)
 from store import Store, LocalBackend, SheetsBackend, today, new_id, SCHEMA
@@ -790,6 +790,13 @@ def screen_transport():
             a, b = st.columns([2, 2]); a.write("**%s**" % v); cur = L.transporter_of(S, v)
             sel = b.selectbox("Transporter", names, index=names.index(cur) if cur in names else None, placeholder="Not set", key="vt_" + L.vkey(v), label_visibility="collapsed")
             if sel and sel != cur: L.set_transporter(S, v, sel); st.rerun()
+        st.markdown("**Last payment settled up to**")
+        st.caption("Trips on or before this date are left out of every Transport screen. Change it each time you settle with a transporter.")
+        for n_ in [n for n in names if n != L.PERSONAL]:
+            cur = L.settled_upto(S, n_)
+            a, b = st.columns([2, 2]); a.write("**%s**" % n_)
+            nd = b.date_input("Settled up to", value=date.fromisoformat(cur) if cur else None, max_value=date.today(), key="sd_" + n_, label_visibility="collapsed", format="DD/MM/YYYY")
+            if nd and str(nd) != cur: L.set_settled(S, n_, str(nd)); st.rerun()
         st.markdown("**Add a vehicle or a new transporter**")
         a, b = st.columns(2); nv = a.text_input("Vehicle number", key="vt_new_v"); nt = b.text_input("Transporter name", key="vt_new_t", placeholder="Type to pick or add")
         if st.button("Save", key="vt_new_s"):

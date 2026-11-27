@@ -4,7 +4,7 @@ import pandas as pd
 from store import SCHEMA, new_id, stamp, today, hash_pin, check_hash, token_hash, new_token, now
 from datetime import timedelta, date as _date
 
-LOGIC_VERSION = "2026-11-27-n"
+LOGIC_VERSION = "2026-11-27-o"
 BUCKETS = ["good", "hold", "bgrade", "recycle", "scrap"]
 BUCKET_NAME = {"good": "Good stock", "hold": "On hold (returns)", "bgrade": "B-grade", "recycle": "To recycle", "scrap": "Scrap"}
 ROLES = ["admin", "supervisor", "operator", "loader", "sales"]
@@ -750,10 +750,20 @@ def set_paid(store, user, refs, day, paid=True):
         if r and r["amount"] not in ("", None):
             row = dict(r); row["paid"] = "1" if paid else ""; row["paid_on"] = day if paid else ""; store.update("Freight", r["_r"], row)
 
+def settled_upto(store, transporter):
+    """The date up to which this transporter was last paid and settled. Trips on or before it are left out of every transport screen."""
+    d = ""
+    for r in store.rows("Lists"):
+        if r["kind"] == "transport_settled" and "|" in str(r["name"]) and str(r["name"]).split("|", 1)[0] == transporter: d = str(r["name"]).split("|", 1)[1]
+    return d
+
+def set_settled(store, transporter, day):
+    if transporter and day and settled_upto(store, transporter) != day: store.append("Lists", [dict(kind="transport_settled", name="%s|%s" % (transporter, day), active=1)])
+
 def trip_key(day, vehicle, tno=""):
     return "T|%s|%s|%s" % (day, vkey(vehicle), str(tno).strip() or "1")
 
-def freight_drops(store, d1, d2, with_own=False):
+def freight_drops(store, d1, d2, with_own=False, with_settled=False):
     """One row per vehicle trip (same vehicle, same day, same trip number), however many customers it carried: where it went, transporter and the single cost."""
     fr = {r["ref"]: r for r in store.rows("Freight")}; g = {}
     for m in store.rows("Moves"):
@@ -770,6 +780,9 @@ def freight_drops(store, d1, d2, with_own=False):
         amt = None if (not x or x["amount"] in ("", None)) else f(x["amount"])
         out.append(dict(e, party=", ".join(e["parties"]), transporter=tr, amount=amt, note=x["note"] if x else "", paid=bool(x and str(x.get("paid", "")) in ("1", "True", "true")), paid_on=(x.get("paid_on", "") if x else "")))
     if not with_own: out = [x for x in out if x["transporter"] != PERSONAL]
+    if not with_settled:
+        sd = {t: settled_upto(store, t) for t in {x["transporter"] for x in out} if t}
+        out = [x for x in out if not (x["transporter"] and sd.get(x["transporter"]) and x["date"] <= sd[x["transporter"]])]
     return sorted(out, key=lambda r: (r["date"], r["vehicle"], r["trip"]), reverse=True)
 
 
