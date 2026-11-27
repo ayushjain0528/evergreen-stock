@@ -4,7 +4,7 @@ import pandas as pd
 from store import SCHEMA, new_id, stamp, today, hash_pin, check_hash, token_hash, new_token, now
 from datetime import timedelta
 
-LOGIC_VERSION = "2026-11-26-i"
+LOGIC_VERSION = "2026-11-27-a"
 BUCKETS = ["good", "hold", "bgrade", "recycle", "scrap"]
 BUCKET_NAME = {"good": "Good stock", "hold": "On hold (returns)", "bgrade": "B-grade", "recycle": "To recycle", "scrap": "Scrap"}
 ROLES = ["admin", "supervisor", "operator", "loader", "sales"]
@@ -305,11 +305,20 @@ def party_match(a, b):
     if not na or not nb: return False
     return na == nb or bool(_tokens(a) & _tokens(b))
 
-def open_orders_for(store, party, item_ids):
+def all_parties(store):
+    """One shared customer list for Orders, Dispatch and Returns: names from orders and dispatches, trimmed, no case-duplicates."""
+    seen = {}
+    names = [o["party"] for o in store.rows("Orders")] + [m["party"] for m in store.rows("Moves") if m["type"] in ("dispatch", "return", "return_decide")]
+    for n in names:
+        n = " ".join(str(n or "").split())
+        if n and n.lower() not in seen: seen[n.lower()] = n
+    return sorted(seen.values(), key=str.lower)
+
+def open_orders_for(store, party, item_ids=None):
     """Open orders of this customer (name need not be typed exactly the same) for the items being loaded, oldest first, with how much is still pending."""
     out = []
     for o in store.rows("Orders"):
-        if o["status"] != "open" or o["item_id"] not in item_ids or not party_match(o["party"], party): continue
+        if o["status"] != "open" or (item_ids is not None and o["item_id"] not in item_ids) or not party_match(o["party"], party): continue
         pend = f(o["qty"]) - f(o.get("sent"))
         if pend > 1e-9: out.append(dict(o, pending=pend))
     return sorted(out, key=lambda r: (r["date"], r["ts"]))

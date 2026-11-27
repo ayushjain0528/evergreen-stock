@@ -9,7 +9,7 @@ import importlib
 import logic as L
 import wa
 import store as _store
-RELEASE = "2026-11-26-i"        # change on every release; it makes the app reload its own parts after an update
+RELEASE = "2026-11-27-a"        # change on every release; it makes the app reload its own parts after an update
 if getattr(L, "LOGIC_VERSION", None) != RELEASE:
     importlib.reload(_store); importlib.reload(L)
 from store import Store, LocalBackend, SheetsBackend, today, new_id, SCHEMA
@@ -396,7 +396,7 @@ def screen_dispatch():
         ca, cb = st.columns([4, 1]); ca.info("Your unsaved dispatch was brought back. Check it, then save. Or press Discard to start fresh.")
         if cb.button("Discard", key="dd_discard"):
             st.session_state["cart"] = []; st.session_state["_dd_back"] = False; dispatch_draft_save([]); st.rerun()
-    vehicles = L.list_values(S.rows("Lists"), "vehicle"); parties = sorted({o["party"] for o in S.rows("Orders")} | {m["party"] for m in S.rows("Moves") if m["type"] == "dispatch" and m["party"]})
+    vehicles = L.list_values(S.rows("Lists"), "vehicle"); parties = L.all_parties(S)
     c1, c2 = st.columns(2)
     with c1:
         veh = st.text_input("Vehicle number", key="d_veh", placeholder="Type it, e.g. KA 06 AB 1234")
@@ -411,6 +411,18 @@ def screen_dispatch():
     with c2: party = combo("Customer / place for the next items", parties, "d_party", "Type name")
     ddate = st.date_input("Dispatch date", value=date.today(), max_value=date.today(), key="d_date")
     cart = st.session_state.setdefault("cart", [])
+    if (party or "").strip():
+        have = {c[0] for c in cart if c[4] == (party or "").strip()}
+        pend = [o for o in L.open_orders_for(S, party.strip()) if o["item_id"] not in have]
+        if pend:
+            nm = items.set_index("id")["name"].to_dict(); un = items.set_index("id")["unit"].to_dict()
+            st.markdown("**Pending orders of %s.** Tick what goes on this vehicle." % party.strip())
+            chosen = []
+            for o in pend:
+                if st.checkbox("%s: pending %s %s (ordered %s, sent %s)" % (nm.get(o["item_id"], "?"), L.fmt(o["pending"]), un.get(o["item_id"], ""), L.fmt(L.f(o["qty"])), L.fmt(L.f(o.get("sent")))), value=True, key="pp_" + o["id"]): chosen.append(o)
+            if chosen and st.button("➕ Add the ticked pending items to this vehicle (%d)" % len(chosen), key="pp_add"):
+                for o in chosen: cart.append((o["item_id"], float(o["pending"]), nm.get(o["item_id"], "?"), un.get(o["item_id"], ""), party.strip()))
+                dispatch_draft_save(cart); st.rerun()
     it = pick_item("disp", items, kinds=["finished"])
     with st.form("addline", clear_on_submit=True):
         qty = qty_box("Quantity to load", unit=(it["unit"] if it is not None else ""))
@@ -471,7 +483,7 @@ def screen_orders():
             st.dataframe(tp.rename(columns={"item": "Item", "brand": "Brand", "unit": "Unit", "ordered": "Ordered", "in_stock": "In stock", "to_make": "Make"}).drop(columns=["id"]),
                          hide_index=True, **WIDE, column_config={c: st.column_config.NumberColumn(format="%g") for c in ["Ordered", "In stock", "Make"]})
     with b:
-        parties = sorted({o["party"] for o in S.rows("Orders")})
+        parties = L.all_parties(S)
         party = combo("Customer", parties, "o_party", "Type customer name")
         it = pick_item("ord", items, kinds=["finished"])
         with st.form("ord", clear_on_submit=True):
@@ -496,7 +508,7 @@ def screen_returns():
     st.subheader("Returns")
     names = items.set_index("id")["name"].to_dict(); units = items.set_index("id")["unit"].to_dict()
     st.markdown("**Record a return** — it waits on hold until it is decided.")
-    parties = sorted({m["party"] for m in S.rows("Moves") if m["party"]})
+    parties = L.all_parties(S)
     party = combo("From whom", parties, "r_party", "Customer name")
     it = pick_item("ret", items, kinds=["finished"])
     with st.form("ret", clear_on_submit=True):
