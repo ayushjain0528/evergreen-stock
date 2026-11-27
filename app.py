@@ -10,7 +10,7 @@ import importlib
 import logic as L
 import wa
 import store as _store
-RELEASE = "2026-11-27-f"        # change on every release; it makes the app reload its own parts after an update
+RELEASE = "2026-11-27-g"        # change on every release; it makes the app reload its own parts after an update
 if getattr(L, "LOGIC_VERSION", None) != RELEASE:
     importlib.reload(_store); importlib.reload(L)
 from store import Store, LocalBackend, SheetsBackend, today, new_id, SCHEMA
@@ -39,6 +39,14 @@ header[data-testid="stHeader"]{background:transparent}
 .st-key-menu label[data-testid="stRadioOption"]:hover,.st-key-menu label[data-baseweb="radio"]:hover{border-color:var(--g2)}
 .st-key-menu label[data-selected="true"],.st-key-menu label:has(input:checked){background:var(--g2);border-color:var(--g2);box-shadow:0 4px 12px rgba(27,127,75,.3)}
 .st-key-menu label[data-selected="true"] p,.st-key-menu label:has(input:checked) p{color:#fff;font-weight:600}
+.sh{background:#fff;border:1px solid var(--line);border-radius:16px;padding:.7rem .8rem;box-shadow:0 2px 8px rgba(23,38,29,.05)}
+.sh-t{font-weight:700;color:var(--g1);font-size:1rem;margin-bottom:.4rem;display:flex;justify-content:space-between;gap:.5rem}.sh-t span{font-weight:500;color:var(--mute);font-size:.8rem}
+.sh table{width:100%;border-collapse:collapse;font-size:.82rem}
+.sh th{text-align:left;color:var(--mute);font-weight:600;font-size:.72rem;text-transform:uppercase;letter-spacing:.03em;padding:.35rem .4rem;border-bottom:2px solid var(--line)}
+.sh td{padding:.38rem .4rem;border-bottom:1px solid var(--line);vertical-align:top;word-break:break-word;color:var(--ink)}
+.sh .sm{color:var(--mute);font-size:.72em}.sh td:first-child{width:34%}.sh .n{text-align:right;white-space:nowrap}.sh .b{font-weight:700;color:#b3261e}
+.sh tr:nth-child(even) td{background:#f8fbf9}
+@media(max-width:640px){.sh table{font-size:.72rem}.sh td,.sh th{padding:.3rem .25rem}}
 /* cards */
 div[data-testid="stMetric"]{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:.8rem 1rem;box-shadow:0 2px 8px rgba(23,38,29,.05)}
 div[data-testid="stMetricValue"]{font-size:1.5rem;font-weight:700;color:var(--g1)}
@@ -579,6 +587,15 @@ def screen_dispatch():
     st.divider(); recent(["dispatch"])
 
 
+def share_table(title, headers, rows, num=(), bold=(), sub=""):
+    """A plain table that shows every row on the page at once (no inner scrolling), so one screenshot can be shared."""
+    th = "".join('<th class="%s">%s</th>' % ("n" if i in num else "", html.escape(h)) for i, h in enumerate(headers))
+    body = ""
+    for r in rows:
+        body += "<tr>" + "".join('<td class="%s%s">%s</td>' % ("n" if i in num else "", " b" if i in bold else "", "<br>".join(('<span class="sm">%s</span>' % html.escape(p)) if k else html.escape(p) for k, p in enumerate(str(c).split("\n")))) for i, c in enumerate(r)) + "</tr>"
+    st.markdown('<div class="sh"><div class="sh-t">%s<span>%s</span></div><table><thead><tr>%s</tr></thead><tbody>%s</tbody></table></div>' % (html.escape(title), html.escape(sub), th, body), unsafe_allow_html=True)
+
+
 def screen_orders():
     items, _, tab = load()
     st.subheader("Orders")
@@ -589,11 +606,13 @@ def screen_orders():
         else:
             view = st.radio("Show", ["By item (what to make)", "By customer (who wants what)"], horizontal=True, key="tp_view", label_visibility="collapsed")
             if view.startswith("By item"):
-                st.dataframe(tp.rename(columns={"category": "Category", "item": "Item", "brand": "Brand", "unit": "Unit", "customers": "Customers", "ordered": "Ordered", "in_stock": "In stock", "to_make": "Make"}).drop(columns=["id"])[["Category", "Brand", "Item", "Unit", "Customers", "Ordered", "In stock", "Make"]],
-                             hide_index=True, **WIDE, column_config={c: st.column_config.NumberColumn(format="%g") for c in ["Ordered", "In stock", "Make"]})
+                rows = [("%s %s\n%s · %s" % (r.brand, r.item, r.category, r.unit), r.customers, L.fmt(r.ordered), L.fmt(r.in_stock), L.fmt(r.to_make) if r.to_make > 0 else "-") for r in tp.itertuples()]
+                share_table("To produce", ["Item", "Customers", "Order", "Stock", "Make"], rows, num={2, 3, 4}, bold={4}, sub=date.today().strftime("%d %b %Y"))
             else:
                 po = L.pending_orders(S).sort_values(["Customer", "Category", "Item"])
-                st.dataframe(po[["Customer", "Category", "Item", "Pending", "Unit", "Needed_by"]].rename(columns={"Needed_by": "Needed by"}), hide_index=True, **WIDE, column_config={"Pending": st.column_config.NumberColumn(format="%g")})
+                rows = [(r.Customer, "%s\n%s" % (r.Item.replace(" | ", " "), r.Category), "%s %s" % (L.fmt(r.Pending), r.Unit), r.Needed_by[5:]) for r in po.itertuples()]
+                share_table("Pending orders by customer", ["Customer", "Item", "Pending", "By"], rows, num={2}, sub=date.today().strftime("%d %b %Y"))
+            st.caption("The whole list is on one page. Take a screenshot to share it.")
     with b:
         parties = L.all_parties(S)
         own = st.checkbox("Just for our own stock (safety stock, no customer)", key="o_own")
