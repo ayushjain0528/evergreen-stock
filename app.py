@@ -10,7 +10,7 @@ import importlib
 import logic as L
 import wa
 import store as _store
-RELEASE = "2026-11-27-k"        # change on every release; it makes the app reload its own parts after an update
+RELEASE = "2026-11-27-l"        # change on every release; it makes the app reload its own parts after an update
 if getattr(L, "LOGIC_VERSION", None) != RELEASE or "Fleet" not in _store.SCHEMA:
     importlib.reload(_store); importlib.reload(L)
 from store import Store, LocalBackend, SheetsBackend, today, new_id, SCHEMA
@@ -558,13 +558,11 @@ def screen_dispatch():
         neg = st.checkbox("Allow sending more than stock (admin only)", value=False) if IS_ADMIN else False
         tno = trip_no_pick(veh, str(ddate), "d_tno")
         note = st.text_input("Note (optional)", key="d_note")
-        tr = None; costs = {}
+        tr = None; cost = None
         if CAN_MANAGE:
             tnames = L.transporter_names(S); cur = L.transporter_of(S, veh) if (veh or "").strip() else ""
             tr = st.selectbox("Transporter", tnames, index=tnames.index(cur) if cur in tnames else None, placeholder="Which transporter's vehicle is this?", key="d_tr_" + L.vkey(veh or ""))
-            with st.expander("Transport cost (optional, you can also fill it later in Transport)"):
-                for gp in groups:
-                    costs[gp] = st.number_input("Cost to %s (₹)" % (gp or "this load"), min_value=0.0, value=None, step=100.0, format="%g", key="d_cost_" + gp, placeholder="Decide later")
+            cost = st.number_input("Transport cost for this vehicle (₹, optional, you can fill it later in Transport)", min_value=0.0, value=None, step=100.0, format="%g", key="d_cost_" + L.vkey(veh or ""), placeholder="Decide later")
         ticked = {}
         names = items.set_index("id")["name"].to_dict()
         for gp in groups:
@@ -581,8 +579,7 @@ def screen_dispatch():
                 if CAN_MANAGE and (veh or "").strip():
                     try:
                         if tr: L.set_transporter(S, veh, tr)
-                        for k, (gp, lines) in enumerate(drops):
-                            if tr or costs.get(gp) is not None: L.set_freight(S, ME, "%s.%d" % (trip, k), str(ddate), " ".join(veh.upper().split()), gp, tr, costs.get(gp))
+                        if tr or cost is not None: L.set_freight(S, ME, L.trip_key(str(ddate), veh, tno), str(ddate), " ".join(veh.upper().split()), ", ".join(g for g in groups if g), tr, cost)
                     except Exception as e: act("freight_error", str(e)[:120], "error")
                 msg = ""; n_ord = 0; n_fin = 0
                 for gp, lines in drops:
@@ -670,14 +667,10 @@ def screen_transport():
         dr = [x for x in L.freight_drops(S, str(d1), str(d2)) if who == "All" or x["transporter"] == who]
         if not dr: st.info("Nothing was dispatched in these dates.")
         else:
-            dr = sorted(dr, key=lambda r: (r["date"], r["vehicle"], r["trip"], r["party"]))
+            dr = sorted(dr, key=lambda r: (r["date"], r["vehicle"], r["trip"]))
             tot = sum(x["amount"] or 0 for x in dr); undec = sum(1 for x in dr if x["amount"] is None)
-            m1, m2, m3 = st.columns(3); m1.metric("Drops", len(dr)); m2.metric("Total cost", L.money(tot)); m3.metric("Cost not decided", undec)
-            rows = []; last = None
-            for x in dr:
-                dk = (x["date"], x["vehicle"], x["trip"])
-                rows.append((x["date"][8:] + "/" + x["date"][5:7] if dk != last else "", x["vehicle"] if dk != last else "", x["party"] + (" (%s)" % x["transporter"] if who == "All" and x["transporter"] else ""), "-" if x["amount"] is None else L.money(x["amount"])))
-                last = dk
+            m1, m2, m3 = st.columns(3); m1.metric("Vehicle trips", len(dr)); m2.metric("Total cost", L.money(tot)); m3.metric("Cost not decided", undec)
+            rows = [(x["date"][8:] + "/" + x["date"][5:7], x["vehicle"] + (" (trip %s)" % x["trip"] if x["trip"] != "1" else ""), x["party"] + (" (%s)" % x["transporter"] if who == "All" and x["transporter"] else ""), "-" if x["amount"] is None else L.money(x["amount"])) for x in dr]
             rows.append(("", "", "TOTAL", L.money(tot)))
             share_table("Transport list, %s" % (who if who != "All" else "all transporters"), ["Date", "Vehicle", "Went to", "Amount"], rows, num={3}, bold=set(), sub="%s to %s" % (d1.strftime("%d %b"), d2.strftime("%d %b %Y")), w0="13%")
             st.caption("One page, so you can take a screenshot and share it. A dash means the cost is not decided yet.")
@@ -691,39 +684,28 @@ def screen_transport():
         dr = L.freight_drops(S, str(date.today() - timedelta(days=days)), str(date.today()))
         if tfil == "Not allotted": dr = [x for x in dr if not x["transporter"]]
         elif tfil != "All": dr = [x for x in dr if x["transporter"] == tfil]
-        trips = {}
-        for x in dr: trips.setdefault((x["date"], x["vehicle"], x["trip"]), []).append(x)
-        tlist = [(k, v) for k, v in trips.items() if (not only) or any(y["amount"] is None for y in v)]
-        tlist.sort(key=lambda kv: kv[0], reverse=True)
+        tlist = [x for x in dr if (not only) or x["amount"] is None]
         if not tlist: st.success("Nothing to fill here.")
-        def trip_tr(v): return v[0]["transporter"]
         shown = 0
         for grp in [n for n in names if n != L.PERSONAL] + [""]:
-            gl = [(k, v) for k, v in tlist if trip_tr(v) == grp]
+            gl = [x for x in tlist if x["transporter"] == grp]
             if not gl: continue
-            allg = [y for k, v in trips.items() if trip_tr(v) == grp for y in v]
+            allg = [x for x in dr if x["transporter"] == grp]
             st.markdown("#### %s" % (grp or "Transporter not allotted"))
-            st.caption("%d vehicle trip(s) to fill · entered so far %s" % (len(gl), L.money(sum(y["amount"] or 0 for y in allg))))
-            for (d, veh, tno), v in gl:
+            st.caption("%d vehicle trip(s) to fill · entered so far %s" % (len(gl), L.money(sum(x["amount"] or 0 for x in allg))))
+            for x in gl:
                 if shown >= 40: break
                 shown += 1
-                tk = "%s|%s|%s" % (d, L.vkey(veh), tno)
                 with st.container(border=True):
                     top1, top2 = st.columns([3, 2])
-                    top1.write("**%s** · %s%s · %d customer(s)" % (veh, d, " · trip %s" % tno if tno != "1" else "", len(v)))
-                    tsel = top2.selectbox("Transporter", names, index=names.index(trip_tr(v)) if trip_tr(v) in names else None, placeholder="Transporter", key="et_" + tk, label_visibility="collapsed")
-                    amts = {}
-                    for x in sorted(v, key=lambda r: r["ref"]):
-                        a1, a2 = st.columns([3, 2])
-                        a1.write(x["party"]); amts[x["ref"]] = a2.number_input("Cost to " + x["party"], min_value=0.0, value=x["amount"], step=100.0, format="%g", key="ea_" + x["ref"], placeholder="Not decided", label_visibility="collapsed")
-                    st.caption("Trip total: %s" % L.money(sum(val or 0 for val in amts.values())))
-                    if st.button("Save this vehicle", key="es_" + tk, type="primary"):
-                        ok = True
-                        for x in v:
-                            if not run(L.set_freight, ME, x["ref"], x["date"], x["vehicle"], x["party"], tsel, amts.get(x["ref"]), x["note"]): ok = False; break
-                        if ok:
-                            if tsel: L.set_transporter(S, veh, tsel)
-                            st.toast("Saved"); st.rerun()
+                    top1.write("**%s** · %s%s" % (x["vehicle"], x["date"], " · trip %s" % x["trip"] if x["trip"] != "1" else ""))
+                    top1.caption("Went to: " + x["party"])
+                    tsel = top2.selectbox("Transporter", names, index=names.index(x["transporter"]) if x["transporter"] in names else None, placeholder="Transporter", key="et_" + x["ref"], label_visibility="collapsed")
+                    amt = top2.number_input("Cost for this vehicle (₹)", min_value=0.0, value=x["amount"], step=100.0, format="%g", key="ea_" + x["ref"], placeholder="Cost (₹), not decided", label_visibility="collapsed")
+                    if st.button("Save", key="es_" + x["ref"], type="primary"):
+                        if run(L.set_freight, ME, x["ref"], x["date"], x["vehicle"], x["party"], tsel, amt, x["note"], ok="Saved"):
+                            if tsel: L.set_transporter(S, x["vehicle"], tsel)
+                            st.rerun()
         if len(tlist) > 40: st.caption("Showing the latest 40 trips. Fill these, then the rest appear.")
     with t3:
         st.caption("Which transporter owns which vehicle. Once set, the Dispatch screen picks the transporter by itself when you type that vehicle number.")

@@ -4,7 +4,7 @@ import pandas as pd
 from store import SCHEMA, new_id, stamp, today, hash_pin, check_hash, token_hash, new_token, now
 from datetime import timedelta, date as _date
 
-LOGIC_VERSION = "2026-11-27-k"
+LOGIC_VERSION = "2026-11-27-l"
 BUCKETS = ["good", "hold", "bgrade", "recycle", "scrap"]
 BUCKET_NAME = {"good": "Good stock", "hold": "On hold (returns)", "bgrade": "B-grade", "recycle": "To recycle", "scrap": "Scrap"}
 ROLES = ["admin", "supervisor", "operator", "loader", "sales"]
@@ -743,18 +743,24 @@ def set_freight(store, user, ref, day, vehicle, party, transporter, amount, note
     if r: store.update("Freight", r["_r"], row)
     else: store.append("Freight", [row])
 
+def trip_key(day, vehicle, tno=""):
+    return "T|%s|%s|%s" % (day, vkey(vehicle), str(tno).strip() or "1")
+
 def freight_drops(store, d1, d2, with_own=False):
-    """Every dispatch drop between d1 and d2 with its transporter and cost. One row per customer on one trip."""
+    """One row per vehicle trip (same vehicle, same day, same trip number), however many customers it carried: where it went, transporter and the single cost."""
     fr = {r["ref"]: r for r in store.rows("Freight")}; g = {}
     for m in store.rows("Moves"):
         if m["type"] != "dispatch" or str(m["void"]) in ("1", "True", "true", "1.0") or m["bucket"] != "good" or not (d1 <= m["date"] <= d2): continue
-        e = g.setdefault(m["ref"], dict(ref=m["ref"], date=m["date"], vehicle=" ".join(str(m["vehicle"]).split()), party=" ".join(str(m["party"]).split()) or "(no customer named)", trip=str(m["shift"]).strip() or "1", qty=0.0))
+        k = trip_key(m["date"], m["vehicle"], m["shift"])
+        e = g.setdefault(k, dict(ref=k, date=m["date"], vehicle=" ".join(str(m["vehicle"]).split()), trip=str(m["shift"]).strip() or "1", parties=[], qty=0.0))
+        p = " ".join(str(m["party"]).split()) or "(no customer named)"
+        if p.lower() not in [x.lower() for x in e["parties"]]: e["parties"].append(p)
         e["qty"] += abs(f(m["qty"]))
     out = []
-    for ref, e in g.items():
-        x = fr.get(ref)
+    for k, e in g.items():
+        x = fr.get(k)
         tr = (x["transporter"] if x and x["transporter"] else "") or transporter_of(store, e["vehicle"])
         amt = None if (not x or x["amount"] in ("", None)) else f(x["amount"])
-        out.append(dict(e, transporter=tr, amount=amt, note=x["note"] if x else ""))
+        out.append(dict(e, party=", ".join(e["parties"]), transporter=tr, amount=amt, note=x["note"] if x else ""))
     if not with_own: out = [x for x in out if x["transporter"] != PERSONAL]
-    return sorted(out, key=lambda r: (r["date"], r["vehicle"], r["trip"], r["party"]), reverse=True)
+    return sorted(out, key=lambda r: (r["date"], r["vehicle"], r["trip"]), reverse=True)
