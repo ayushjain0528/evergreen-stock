@@ -10,8 +10,8 @@ import importlib
 import logic as L
 import wa
 import store as _store
-RELEASE = "2026-11-27-h"        # change on every release; it makes the app reload its own parts after an update
-if getattr(L, "LOGIC_VERSION", None) != RELEASE:
+RELEASE = "2026-11-27-i"        # change on every release; it makes the app reload its own parts after an update
+if getattr(L, "LOGIC_VERSION", None) != RELEASE or "Fleet" not in _store.SCHEMA:
     importlib.reload(_store); importlib.reload(L)
 from store import Store, LocalBackend, SheetsBackend, today, new_id, SCHEMA
 
@@ -101,7 +101,7 @@ def get_store(version=APP_VERSION):
 
 NEW = hasattr(st, "iframe")           # newer Streamlit; the code also runs on older ones
 WIDE = {"width": "stretch"} if NEW else {"use_container_width": True}
-S = get_store()
+S = get_store(APP_VERSION)
 
 
 def choose_other(label, options, key):

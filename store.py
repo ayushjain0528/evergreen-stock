@@ -187,7 +187,12 @@ class Store:
             return self.snap
     def refresh(self):
         with self.lock: self.snap = None
-    def rows(self, t): return self.data()[t]
+    def rows(self, t):
+        d = self.data()
+        if t not in d:                     # a table added by a newer release: make the tab, then read again
+            try: self.b.ensure(); self.snap = None; d = self.data()
+            except Exception: pass
+        return d.get(t, [])
     def append(self, t, rows):
         with self.lock:
             self.b.append(t, rows); self.snap = None
