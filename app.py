@@ -10,7 +10,7 @@ import importlib
 import logic as L
 import wa
 import store as _store
-RELEASE = "2026-11-27-j"        # change on every release; it makes the app reload its own parts after an update
+RELEASE = "2026-11-27-k"        # change on every release; it makes the app reload its own parts after an update
 if getattr(L, "LOGIC_VERSION", None) != RELEASE or "Fleet" not in _store.SCHEMA:
     importlib.reload(_store); importlib.reload(L)
 from store import Store, LocalBackend, SheetsBackend, today, new_id, SCHEMA
@@ -691,31 +691,40 @@ def screen_transport():
         dr = L.freight_drops(S, str(date.today() - timedelta(days=days)), str(date.today()))
         if tfil == "Not allotted": dr = [x for x in dr if not x["transporter"]]
         elif tfil != "All": dr = [x for x in dr if x["transporter"] == tfil]
-        allrows = dr
-        if only: dr = [x for x in dr if x["amount"] is None]
-        if not dr: st.success("Nothing to fill here.")
+        trips = {}
+        for x in dr: trips.setdefault((x["date"], x["vehicle"], x["trip"]), []).append(x)
+        tlist = [(k, v) for k, v in trips.items() if (not only) or any(y["amount"] is None for y in v)]
+        tlist.sort(key=lambda kv: kv[0], reverse=True)
+        if not tlist: st.success("Nothing to fill here.")
+        def trip_tr(v): return v[0]["transporter"]
         shown = 0
         for grp in [n for n in names if n != L.PERSONAL] + [""]:
-            gl = [x for x in dr if x["transporter"] == grp]
+            gl = [(k, v) for k, v in tlist if trip_tr(v) == grp]
             if not gl: continue
-            full = [x for x in allrows if x["transporter"] == grp]
+            allg = [y for k, v in trips.items() if trip_tr(v) == grp for y in v]
             st.markdown("#### %s" % (grp or "Transporter not allotted"))
-            st.caption("%d to fill · %d drops in these dates · entered so far %s" % (len(gl), len(full), L.money(sum(x["amount"] or 0 for x in full))))
-            for x in gl:
-                if shown >= 60: break
+            st.caption("%d vehicle trip(s) to fill · entered so far %s" % (len(gl), L.money(sum(y["amount"] or 0 for y in allg))))
+            for (d, veh, tno), v in gl:
+                if shown >= 40: break
                 shown += 1
+                tk = "%s|%s|%s" % (d, L.vkey(veh), tno)
                 with st.container(border=True):
-                    st.write("**%s** · %s · %s" % (x["party"], x["vehicle"], x["date"]))
-                    a, b, c = st.columns([2, 2, 1])
-                    opts = names
-                    tsel = a.selectbox("Transporter", opts, index=opts.index(x["transporter"]) if x["transporter"] in opts else None, placeholder="Choose", key="et_" + x["ref"])
-                    amt = b.number_input("Cost (₹)", min_value=0.0, value=x["amount"], step=100.0, format="%g", key="ea_" + x["ref"], placeholder="Not decided")
-                    c.write("")
-                    if c.button("Save", key="es_" + x["ref"]):
-                        if run(L.set_freight, ME, x["ref"], x["date"], x["vehicle"], x["party"], tsel, amt, x["note"], ok="Saved"):
-                            if tsel: L.set_transporter(S, x["vehicle"], tsel)
-                            st.rerun()
-        if len(dr) > 60: st.caption("Showing the first 60. Fill these, then the rest appear.")
+                    top1, top2 = st.columns([3, 2])
+                    top1.write("**%s** · %s%s · %d customer(s)" % (veh, d, " · trip %s" % tno if tno != "1" else "", len(v)))
+                    tsel = top2.selectbox("Transporter", names, index=names.index(trip_tr(v)) if trip_tr(v) in names else None, placeholder="Transporter", key="et_" + tk, label_visibility="collapsed")
+                    amts = {}
+                    for x in sorted(v, key=lambda r: r["ref"]):
+                        a1, a2 = st.columns([3, 2])
+                        a1.write(x["party"]); amts[x["ref"]] = a2.number_input("Cost to " + x["party"], min_value=0.0, value=x["amount"], step=100.0, format="%g", key="ea_" + x["ref"], placeholder="Not decided", label_visibility="collapsed")
+                    st.caption("Trip total: %s" % L.money(sum(val or 0 for val in amts.values())))
+                    if st.button("Save this vehicle", key="es_" + tk, type="primary"):
+                        ok = True
+                        for x in v:
+                            if not run(L.set_freight, ME, x["ref"], x["date"], x["vehicle"], x["party"], tsel, amts.get(x["ref"]), x["note"]): ok = False; break
+                        if ok:
+                            if tsel: L.set_transporter(S, veh, tsel)
+                            st.toast("Saved"); st.rerun()
+        if len(tlist) > 40: st.caption("Showing the latest 40 trips. Fill these, then the rest appear.")
     with t3:
         st.caption("Which transporter owns which vehicle. Once set, the Dispatch screen picks the transporter by itself when you type that vehicle number.")
         known = []
