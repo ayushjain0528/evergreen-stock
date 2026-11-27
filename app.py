@@ -1,4 +1,5 @@
 """Evergreen Stock - one app for stock, production, dispatch, orders, returns, raw material and reports."""
+import html
 import io, os, time, zipfile, hashlib
 from datetime import date, timedelta
 import pandas as pd
@@ -9,22 +10,61 @@ import importlib
 import logic as L
 import wa
 import store as _store
-RELEASE = "2026-11-27-c"        # change on every release; it makes the app reload its own parts after an update
+RELEASE = "2026-11-27-d"        # change on every release; it makes the app reload its own parts after an update
 if getattr(L, "LOGIC_VERSION", None) != RELEASE:
     importlib.reload(_store); importlib.reload(L)
 from store import Store, LocalBackend, SheetsBackend, today, new_id, SCHEMA
 
-st.set_page_config(page_title="Evergreen Stock", page_icon="🌿", layout="centered", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="Evergreen Stock", page_icon="🌿", layout="wide", initial_sidebar_state="collapsed")
 st.markdown("""<style>
-.block-container{padding-top:1.2rem;padding-bottom:3rem;max-width:760px}
-div[data-testid="stMetricValue"]{font-size:1.25rem}
-div[data-testid="stMetric"]{background:#f4f8f4;border:1px solid #dfe9df;border-radius:10px;padding:.5rem .7rem}
-div[data-testid="stMetricLabel"] p{font-size:.8rem;color:#55705a}
-button[data-baseweb="tab"]{padding:.5rem .7rem}
-div[data-baseweb="tab-list"]{overflow-x:auto;gap:.1rem}
-details{border-radius:10px}
-div[role="radiogroup"]{gap:.15rem .8rem}div[role="radiogroup"] label p{font-size:.92rem}
-.stButton>button,.stFormSubmitButton>button{width:100%;min-height:2.8rem;font-weight:600}
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+:root{--g1:#0f5132;--g2:#1b7f4b;--g3:#e7f4ec;--ink:#17261d;--mute:#5f7366;--line:#e3ebe5;--card:#ffffff;--bg:#f4f7f5}
+html,body,.stApp,.stApp p,.stApp label,.stApp button,.stApp input,.stApp textarea,.stApp h1,.stApp h2,.stApp h3,.stApp li,.stApp td,.stApp th{font-family:'Inter',system-ui,-apple-system,'Segoe UI',sans-serif}
+span[data-testid="stIconMaterial"]{font-family:'Material Symbols Rounded'!important}
+.stApp{background:var(--bg)}
+header[data-testid="stHeader"]{background:transparent}
+.block-container{padding-top:1rem;padding-bottom:4rem;max-width:1080px}
+/* top banner */
+.eg-hero{background:linear-gradient(135deg,var(--g1),var(--g2));color:#fff;border-radius:18px;padding:1rem 1.2rem;margin:0 0 .9rem;display:flex;justify-content:space-between;align-items:center;gap:.8rem;box-shadow:0 8px 22px rgba(15,81,50,.22)}
+.eg-hero .t{font-size:1.35rem;font-weight:700;letter-spacing:-.01em;line-height:1.2}
+.eg-hero .s{font-size:.82rem;opacity:.85;margin-top:.15rem}
+.eg-hero .pill{background:rgba(255,255,255,.16);border:1px solid rgba(255,255,255,.3);border-radius:999px;padding:.3rem .75rem;font-size:.8rem;font-weight:600;white-space:nowrap}
+/* page menu as pills */
+.st-key-page div[role="radiogroup"]{flex-wrap:nowrap!important;overflow-x:auto;gap:.4rem!important;padding:.2rem .1rem .5rem;scrollbar-width:none}
+.st-key-page div[role="radiogroup"]::-webkit-scrollbar{display:none}
+.st-key-page div[role="radiogroup"]>div{flex:0 0 auto}
+.st-key-page label[data-testid="stRadioOption"],.st-key-page label[data-baseweb="radio"]{background:var(--card);border:1px solid var(--line);border-radius:999px;padding:.42rem .95rem;margin:0;white-space:nowrap;cursor:pointer;transition:all .15s;box-shadow:0 1px 2px rgba(0,0,0,.04);flex:0 0 auto}
+.st-key-page label[data-testid="stRadioOption"]>div>div:first-child,.st-key-page label[data-baseweb="radio"]>div:first-child{display:none}
+.st-key-page label p{font-size:.9rem;font-weight:500;color:var(--ink);white-space:nowrap}
+.st-key-page label[data-testid="stRadioOption"]:hover,.st-key-page label[data-baseweb="radio"]:hover{border-color:var(--g2)}
+.st-key-page label[data-selected="true"],.st-key-page label:has(input:checked){background:var(--g2);border-color:var(--g2);box-shadow:0 4px 12px rgba(27,127,75,.3)}
+.st-key-page label[data-selected="true"] p,.st-key-page label:has(input:checked) p{color:#fff;font-weight:600}
+/* cards */
+div[data-testid="stMetric"]{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:.8rem 1rem;box-shadow:0 2px 8px rgba(23,38,29,.05)}
+div[data-testid="stMetricValue"]{font-size:1.5rem;font-weight:700;color:var(--g1)}
+div[data-testid="stMetricLabel"] p{font-size:.78rem;color:var(--mute);font-weight:500;text-transform:uppercase;letter-spacing:.04em}
+div[data-testid="stExpander"]{background:var(--card);border:1px solid var(--line);border-radius:14px;box-shadow:0 2px 8px rgba(23,38,29,.04)}
+div[data-testid="stForm"],div[data-testid="stVerticalBlockBorderWrapper"]:has(> div > div[data-testid="stVerticalBlock"] > .stMarkdown){border-radius:16px}
+div[data-testid="stForm"]{background:var(--card);border:1px solid var(--line);box-shadow:0 2px 8px rgba(23,38,29,.04)}
+div[data-testid="stDataFrame"]{border:1px solid var(--line);border-radius:14px;overflow:hidden;box-shadow:0 2px 8px rgba(23,38,29,.04)}
+/* inputs */
+div[data-baseweb="input"]>div,div[data-baseweb="select"]>div,div[data-baseweb="base-input"]{border-radius:12px;border-color:var(--line);background:var(--card)}
+div[data-baseweb="input"]:focus-within>div,div[data-baseweb="select"]:focus-within>div{border-color:var(--g2);box-shadow:0 0 0 3px rgba(27,127,75,.15)}
+label p{font-weight:500;color:var(--ink)}
+/* buttons */
+.stButton button,.stFormSubmitButton button,.stDownloadButton button{width:100%;min-height:2.8rem;font-weight:600;border-radius:12px;border:1px solid var(--line);background:var(--card);color:var(--ink);transition:all .15s}
+.stButton button:hover,.stFormSubmitButton button:hover{border-color:var(--g2);color:var(--g2);transform:translateY(-1px)}
+.stButton button[kind="primary"],.stFormSubmitButton button[kind="primary"]{background:linear-gradient(135deg,var(--g2),var(--g1));color:#fff;border:0;box-shadow:0 6px 16px rgba(27,127,75,.3)}
+.stButton button[kind="primary"]:hover{color:#fff;filter:brightness(1.07)}
+/* tabs */
+div[data-baseweb="tab-list"]{overflow-x:auto;gap:.3rem;border-bottom:1px solid var(--line)}
+button[data-baseweb="tab"]{padding:.5rem .9rem;border-radius:10px 10px 0 0;font-weight:500}
+button[data-baseweb="tab"][aria-selected="true"]{color:var(--g1);font-weight:700}
+div[data-baseweb="tab-highlight"]{background:var(--g2);height:3px;border-radius:3px}
+h3,h2{letter-spacing:-.01em;color:var(--ink)}
+div[data-testid="stAlert"]{border-radius:12px}
+hr{border-color:var(--line)}
+@media(max-width:640px){div[data-testid="stHorizontalBlock"]:has(div[data-testid="stMetric"]){flex-wrap:nowrap!important;gap:.5rem!important}div[data-testid="stHorizontalBlock"]:has(div[data-testid="stMetric"])>div{min-width:0!important;flex:1 1 0!important}div[data-testid="stMetric"]{padding:.55rem .6rem}div[data-testid="stMetricValue"]{font-size:.92rem}div[data-testid="stMetricLabel"] *{white-space:normal!important;overflow:visible!important;text-overflow:clip!important}div[data-testid="stMetricLabel"] p{font-size:.62rem}.block-container{padding-left:.8rem;padding-right:.8rem}.eg-hero .t{font-size:1.15rem}.eg-hero{padding:.8rem .9rem}}
 </style>""", unsafe_allow_html=True)
 
 
@@ -1022,7 +1062,7 @@ def screen_wa():
 SCREENS = {"Stock": screen_stock, "Inward": screen_inward, "Add Stock": screen_addstock, "Production": screen_production, "Dispatch": screen_dispatch, "WhatsApp": screen_wa, "Orders": screen_orders, "Returns": screen_returns,
            "Raw & Waste": screen_raw, "Count": screen_count, "Reports": screen_reports, "Fix entries": screen_fix, "Admin": screen_admin}
 
-st.markdown("### 🌿 Evergreen Stock" + ("" if LIVE else "  ·  TRIAL"))
+st.markdown('<div class="eg-hero"><div><div class="t">🌿 Evergreen Stock%s</div><div class="s">Evergreen Irrigation · %s</div></div><div class="pill">%s</div></div>' % ("" if LIVE else " · TRIAL", date.today().strftime("%a, %d %b %Y"), html.escape(str(ME))), unsafe_allow_html=True)
 with st.sidebar:
     st.write("Signed in: **%s** (%s)" % (ME, ROLE))
     if st.button("Sign out"):
