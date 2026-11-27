@@ -10,7 +10,7 @@ import importlib
 import logic as L
 import wa
 import store as _store
-RELEASE = "2026-11-27-l"        # change on every release; it makes the app reload its own parts after an update
+RELEASE = "2026-11-27-n"        # change on every release; it makes the app reload its own parts after an update
 if getattr(L, "LOGIC_VERSION", None) != RELEASE or "Fleet" not in _store.SCHEMA:
     importlib.reload(_store); importlib.reload(L)
 from store import Store, LocalBackend, SheetsBackend, today, new_id, SCHEMA
@@ -649,10 +649,46 @@ def screen_orders():
         if not n: st.caption("None open.")
 
 
+def screen_summary():
+    st.subheader("Summary")
+    a, b = st.tabs(["Period summary", "Item movement"])
+    with a:
+        c1, c2 = st.columns(2); td = date.today()
+        per = c1.selectbox("Period", ["This week", "Last week", "Last 7 days", "This month", "Last month", "Pick dates"], key="su_per")
+        mon = td - timedelta(days=td.weekday())
+        if per == "This week": d1, d2 = mon, td
+        elif per == "Last week": d1, d2 = mon - timedelta(days=7), mon - timedelta(days=1)
+        elif per == "Last 7 days": d1, d2 = td - timedelta(days=6), td
+        elif per == "This month": d1, d2 = td.replace(day=1), td
+        elif per == "Last month": d2 = td.replace(day=1) - timedelta(days=1); d1 = d2.replace(day=1)
+        else:
+            x1, x2 = c2.columns(2); d1 = x1.date_input("From", value=td - timedelta(days=6), key="su_d1"); d2 = x2.date_input("To", value=td, key="su_d2")
+        S_ = L.period_summary(S, str(d1), str(d2)); sub = "%s to %s" % (d1.strftime("%d %b"), d2.strftime("%d %b %Y"))
+        m1, m2, m3, m4 = st.columns(4); m1.metric("Made", L.fmt(sum(S_["made"].values()))); m2.metric("Sent", L.fmt(sum(S_["sent"].values()))); m3.metric("Transport cost", L.money(sum(v["cost"] for v in S_["transport"].values()))); m4.metric("Pending order lines", S_["pending"])
+        cats = sorted(set(S_["made"]) | set(S_["sent"]))
+        rows = [(c, L.fmt(S_["made"].get(c, 0)), L.fmt(S_["sent"].get(c, 0))) for c in cats] + [("TOTAL", L.fmt(sum(S_["made"].values())), L.fmt(sum(S_["sent"].values())))]
+        share_table("Made and sent by category", ["Category", "Made", "Sent"], rows, num={1, 2}, sub=sub, w0="50%"); st.write("")
+        if S_["cust"]:
+            share_table("Top customers (quantity sent)", ["Customer", "Qty sent"], [(k, L.fmt(v)) for k, v in list(S_["cust"].items())[:15]], num={1}, sub=sub, w0="70%"); st.write("")
+        if S_["transport"]:
+            share_table("Transport", ["Transporter", "Trips", "Cost", "Not decided"], [(k, v["trips"], L.money(v["cost"]), v["undecided"] or "") for k, v in S_["transport"].items()], num={1, 2, 3}, sub=sub, w0="40%")
+    with b:
+        days = st.selectbox("Look at the last", [30, 60, 90], index=1, format_func=lambda n: "%d days" % n, key="im_days")
+        im = L.item_movement(S, days)
+        if im.empty: st.info("Nothing to show yet.")
+        else:
+            fast = im[im["Tag"] == "Fast"].sort_values("Cover_days").head(15); dead = im[im["Tag"] == "Dead stock"].sort_values("Stock", ascending=False).head(20); top = im.sort_values("Sent", ascending=False).head(10)
+            top = top[top["Sent"] > 0]
+            if not top.empty: share_table("Selling most (last %d days)" % days, ["Item", "Sent", "Stock", "Made"], [("%s\n%s" % (r.Item, r.Category), L.fmt(r.Sent), L.fmt(r.Stock), L.fmt(r.Made)) for r in top.itertuples()], num={1, 2, 3}, w0="55%"); st.write("")
+            if not fast.empty: share_table("Running out soon (less than 14 days of stock)", ["Item", "Stock", "Days left"], [("%s\n%s" % (r.Item, r.Category), L.fmt(r.Stock), "%d" % round(r.Cover_days)) for r in fast.itertuples()], num={1, 2}, bold={2}, w0="60%"); st.write("")
+            if not dead.empty: share_table("Dead stock (in stock, nothing sent in %d days)" % days, ["Item", "Stock", "Last sent"], [("%s\n%s" % (r.Item, r.Category), "%s %s" % (L.fmt(r.Stock), r.Unit), r.Last_sent or "never") for r in dead.itertuples()], num={1}, w0="55%")
+            st.download_button("Download all (CSV)", im.to_csv(index=False).encode(), "item-movement.csv", "text/csv", key="im_dl")
+
+
 def screen_transport():
     st.subheader("Transport")
     names = L.transporter_names(S)
-    t1, t2, t3 = st.tabs(["Transporter's list", "Enter costs", "Vehicles"])
+    t1, t2, tp, ts, t3 = st.tabs(["Transporter's list", "Enter costs", "Payments", "Monthly statement", "Vehicles"])
     with t1:
         c1, c2 = st.columns(2)
         who = c1.selectbox("Transporter", ["All"] + names, key="tl_who")
@@ -670,10 +706,10 @@ def screen_transport():
             dr = sorted(dr, key=lambda r: (r["date"], r["vehicle"], r["trip"]))
             tot = sum(x["amount"] or 0 for x in dr); undec = sum(1 for x in dr if x["amount"] is None)
             m1, m2, m3 = st.columns(3); m1.metric("Vehicle trips", len(dr)); m2.metric("Total cost", L.money(tot)); m3.metric("Cost not decided", undec)
-            rows = [(x["date"][8:] + "/" + x["date"][5:7], x["vehicle"] + (" (trip %s)" % x["trip"] if x["trip"] != "1" else ""), x["party"] + (" (%s)" % x["transporter"] if who == "All" and x["transporter"] else ""), "-" if x["amount"] is None else L.money(x["amount"])) for x in dr]
+            rows = [(x["date"][8:] + "/" + x["date"][5:7], x["vehicle"] + (" (trip %s)" % x["trip"] if x["trip"] != "1" else ""), x["party"] + (" (%s)" % x["transporter"] if who == "All" and x["transporter"] else ""), ("-" if x["amount"] is None else L.money(x["amount"]) + (" ✓" if x["paid"] else ""))) for x in dr]
             rows.append(("", "", "TOTAL", L.money(tot)))
             share_table("Transport list, %s" % (who if who != "All" else "all transporters"), ["Date", "Vehicle", "Went to", "Amount"], rows, num={3}, bold=set(), sub="%s to %s" % (d1.strftime("%d %b"), d2.strftime("%d %b %Y")), w0="13%")
-            st.caption("One page, so you can take a screenshot and share it. A dash means the cost is not decided yet.")
+            st.caption("One page, so you can take a screenshot and share it. A dash means the cost is not decided yet. A tick means it is paid.")
             csv = pd.DataFrame([dict(Date=x["date"], Vehicle=x["vehicle"], Trip=x["trip"], Place=x["party"], Transporter=x["transporter"], Amount="" if x["amount"] is None else x["amount"]) for x in dr])
             st.download_button("Download (CSV)", csv.to_csv(index=False).encode(), "transport.csv", "text/csv", key="tl_dl")
     with t2:
@@ -707,6 +743,43 @@ def screen_transport():
                             if tsel: L.set_transporter(S, x["vehicle"], tsel)
                             st.rerun()
         if len(tlist) > 40: st.caption("Showing the latest 40 trips. Fill these, then the rest appear.")
+    with tp:
+        who = st.selectbox("Transporter", [n for n in names if n != L.PERSONAL], key="pay_who")
+        allf = [x for x in L.freight_drops(S, "2000-01-01", str(date.today())) if x["transporter"] == who and x["amount"] is not None]
+        due = [x for x in allf if not x["paid"]]; paid = [x for x in allf if x["paid"]]
+        m1, m2, m3 = st.columns(3); m1.metric("You owe", L.money(sum(x["amount"] for x in due))); m2.metric("Trips unpaid", len(due)); m3.metric("Paid so far", L.money(sum(x["amount"] for x in paid)))
+        und = [x for x in L.freight_drops(S, "2000-01-01", str(date.today())) if x["transporter"] == who and x["amount"] is None]
+        if und: st.warning("%d trip(s) of %s have no cost yet. Fill them in Enter costs." % (len(und), who))
+        if not due: st.success("Nothing unpaid for %s." % who)
+        else:
+            st.markdown("**Unpaid trips.** Tick what you have paid, then press the button.")
+            pick = []
+            for x in sorted(due, key=lambda r: r["date"]):
+                if st.checkbox("%s · %s · %s · %s" % (x["date"], x["vehicle"], x["party"], L.money(x["amount"])), key="pk_" + x["ref"]): pick.append(x)
+            pd_ = st.date_input("Paid on", value=date.today(), max_value=date.today(), key="pay_on")
+            if st.button("Mark %d trip(s) as paid (%s)" % (len(pick), L.money(sum(x["amount"] for x in pick))), type="primary", disabled=not pick, key="pay_go"):
+                if run(L.set_paid, ME, [x["ref"] for x in pick], str(pd_), True, ok="Marked as paid"): st.rerun()
+        if paid:
+            with st.expander("Paid trips (%d)" % len(paid)):
+                for x in sorted(paid, key=lambda r: r["date"], reverse=True)[:40]:
+                    a, b = st.columns([5, 1]); a.write("%s · %s · %s · %s · paid %s" % (x["date"], x["vehicle"], x["party"], L.money(x["amount"]), x["paid_on"]))
+                    if b.button("Undo", key="pu_" + x["ref"]): L.set_paid(S, ME, [x["ref"]], "", False); st.rerun()
+    with ts:
+        c1, c2 = st.columns(2)
+        td = date.today(); months = [(td.replace(day=1) - timedelta(days=31 * i)).strftime("%Y-%m") for i in range(0, 12)]
+        months = sorted(set(months), reverse=True)
+        mo = c1.selectbox("Month", months, key="st_mo"); whoS = c2.selectbox("Transporter", ["All"] + [n for n in names if n != L.PERSONAL], key="st_who")
+        y, m_ = int(mo[:4]), int(mo[5:]); d1 = date(y, m_, 1); d2 = (date(y + (m_ == 12), m_ % 12 + 1, 1) - timedelta(days=1))
+        dr = [x for x in L.freight_drops(S, str(d1), str(d2)) if whoS == "All" or x["transporter"] == whoS]
+        if not dr: st.info("No dispatch in this month.")
+        else:
+            for grp in sorted({x["transporter"] or "(not allotted)" for x in dr}):
+                gl = sorted([x for x in dr if (x["transporter"] or "(not allotted)") == grp], key=lambda r: (r["date"], r["vehicle"]))
+                tot = sum(x["amount"] or 0 for x in gl); pdv = sum(x["amount"] or 0 for x in gl if x["paid"]); und = sum(1 for x in gl if x["amount"] is None)
+                rows = [(x["date"][8:] + "/" + x["date"][5:7], x["vehicle"], x["party"], "-" if x["amount"] is None else L.money(x["amount"]), "paid" if x["paid"] else ("" if x["amount"] is None else "due")) for x in gl]
+                rows.append(("", "", "TOTAL (%d trips)" % len(gl), L.money(tot), "paid %s · due %s" % (L.money(pdv), L.money(tot - pdv))))
+                share_table("%s · %s" % (grp, d1.strftime("%B %Y")), ["Date", "Vehicle", "Went to", "Amount", "Status"], rows, num={3}, sub=("%d cost(s) not decided" % und) if und else "", w0="12%")
+                st.write("")
     with t3:
         st.caption("Which transporter owns which vehicle. Once set, the Dispatch screen picks the transporter by itself when you type that vehicle number.")
         known = []
@@ -1054,7 +1127,7 @@ def screen_admin():
         if S.sync_error: st.warning("Last sheet update failed: " + S.sync_error)
         st.write("**Activity log:** every login, screen opened, save, edit, undo and error is written to a tab called *Log* in the Google Sheet (who, when, what, how long it took). Use it to see what staff do and where things go wrong.")
         if S.log_error: st.warning("Last log write failed: " + S.log_error)
-        st.write("**Daily backup:** a copy of all your data is saved once a day in ONE tab called *Backup* in the Google Sheet. The same tab is rewritten each day, so no new tabs pile up. " + ("Today's backup is done." if S.bk_day == today() else "Today's backup is not done yet."))
+        st.write("**Daily backup:** a dated copy of your data is saved once a day as a tab called *Backup YYYY-MM-DD* in the Google Sheet. The last 7 days are kept and older ones are removed. " + ("Today's backup is done." if S.bk_day == today() else "Today's backup is not done yet."))
         if S.bk_error: st.warning("Last backup problem: " + S.bk_error)
         if st.button("Back up now"):
             try: L.backup_now(S, today()); S.bk_day = today(); act("backup_now"); st.toast("Backup saved", icon="✅")
@@ -1208,16 +1281,17 @@ def wa_review(parsed, tag):
     dt = c1.date_input("Date", value=pdate(parsed.get("date", "")), max_value=today_, key=tag + "_dt")
     shift = vehicle = ""
     if kind == "production": shift = c2.selectbox("Shift", ["", "A", "B"], index=["", "A", "B"].index(parsed.get("shift", "")) if parsed.get("shift", "") in ("", "A", "B") else 0, key=tag + "_sh")
+    elif kind == "order": due = c2.date_input("Needed by", value=date.today() + timedelta(days=3), key=tag + "_due")
     else: vehicle = c2.text_input("Vehicle", value=parsed.get("vehicle", ""), key=tag + "_veh")
-    groups = parsed["groups"] if kind == "dispatch" else [dict(party="", lines=parsed["lines"])]
+    groups = parsed["groups"] if kind in ("dispatch", "order") else [dict(party="", lines=parsed["lines"])]
     have = {m["ref"] for m in S.rows("Moves")} if kind == "production" else set()
     out = []; needs = 0
     for gi, g in enumerate(groups):
         party = g["party"]
-        if kind == "dispatch": party = st.text_input("Customer / place", value=g["party"], key="%s_p%d" % (tag, gi))
+        if kind in ("dispatch", "order"): party = st.text_input("Customer / place", value=g["party"], key="%s_p%d" % (tag, gi))
         lines = []
         for li, l in enumerate(g["lines"]):
-            best, cands, sure = wa.match(l["text"] + ((" (%s)" % wa.brand_of(g["party"])) if kind == "dispatch" and wa.brand_of(g["party"]) and wa.brand_of(g["party"]) not in l["text"].lower() else ""), recs)
+            best, cands, sure = wa.match(l["text"] + ((" (%s)" % wa.brand_of(g["party"])) if kind in ("dispatch", "order") and wa.brand_of(g["party"]) and wa.brand_of(g["party"]) not in l["text"].lower() else ""), recs)
             k = "%s_%d_%d" % (tag, gi, li)
             with st.container(border=True) if NEW else st.container():
                 st.markdown("**%s** — %s" % ("\u2705" if sure else "\u26a0\ufe0f check this", l["text"]) + ("  \u2014 **no quantity found, type it below**" if l["qty"] <= 0 else ""))
@@ -1244,6 +1318,18 @@ def wa_review(parsed, tag):
                 wa_draft_done(); act("wa_production", "%d lines %s %s" % (len(merged), dt, shift)); st.success("Saved %d production line(s) for %s shift %s." % (len(merged), dt, shift or "-"))
             except L.Problem as e: st.error(str(e))
             except Exception as e: st.error("Could not save. (%s)" % str(e)[:160])
+    elif kind == "order":
+        drops = [(p, ls) for p, ls in out if ls]
+        miss = [p for p, ls in drops if not p.strip()]
+        if miss: st.warning("Type the customer name for every group.")
+        n_l = sum(len(ls) for _, ls in drops)
+        if st.button("\u2705 Save %d order line(s)" % n_l, type="primary", key=tag + "_save", disabled=bool(needs) or not drops or bool(miss)):
+            try:
+                for p, ls in drops:
+                    for i, q in ls: L.add_order(S, ME, p, i, q, str(due), "From WhatsApp")
+                wa_draft_done(); act("wa_order", "%d lines" % n_l); st.success("Saved %d order line(s). They now show in Orders and To produce." % n_l)
+            except L.Problem as e: st.error(str(e))
+            except Exception as e: st.error("Could not save. (%s)" % str(e)[:160])
     else:
         drops = [(p, ls) for p, ls in out if ls]
         neg = st.checkbox("Allow sending more than stock (admin only)", key=tag + "_neg") if IS_ADMIN else False
@@ -1261,19 +1347,20 @@ def wa_review(parsed, tag):
 
 def screen_wa():
     st.subheader("From WhatsApp")
-    st.caption("Paste a production or dispatch message from WhatsApp. The app shows what it understood, line by line. Nothing is saved until you check it and press Save.")
+    st.caption("Paste a production, dispatch or customer order message from WhatsApp. The app shows what it understood, line by line. Nothing is saved until you check it and press Save.")
     draft_restore("whatsapp", []); draft_banner("whatsapp", ["wa_txt"])
     txt = st.text_area("Paste the message here", height=200, key="wa_txt", placeholder="Production details\nDate- 12/11/26\nShift-B\n\n8mil 7.3kg 20cm 800mtrs(evg) -06rolls ...")
     draft_save("whatsapp", ["wa_txt"])
     if txt.strip():
-        kind = st.radio("This is a", ["Production", "Dispatch"], index=0 if wa.guess_kind(txt) == "production" else 1, horizontal=True, key="wa_kind")
+        kind = st.radio("This is a", ["Production", "Dispatch", "Order"], index=0 if wa.guess_kind(txt) == "production" else 1, horizontal=True, key="wa_kind")
         parsed = wa.parse_production(txt) if kind == "Production" else wa.parse_dispatch(txt)
+        if kind == "Order": parsed = dict(parsed, kind="order")
         n = len(parsed["lines"]) if kind == "Production" else sum(len(g["lines"]) for g in parsed["groups"])
         if not n: st.error("I could not find any lines. Each line should end with a quantity, like '16R nisi 300mtrs 10kg 40cm -112rolls'.")
         else: wa_review(parsed, "wp" + hashlib.md5((kind + txt).encode()).hexdigest()[:6])
 
 
-SCREENS = {"Transport": screen_transport, "Customers": screen_customers, "Stock": screen_stock, "Inward": screen_inward, "Add Stock": screen_addstock, "Production": screen_production, "Dispatch": screen_dispatch, "WhatsApp": screen_wa, "Orders": screen_orders, "Returns": screen_returns,
+SCREENS = {"Summary": screen_summary, "Transport": screen_transport, "Customers": screen_customers, "Stock": screen_stock, "Inward": screen_inward, "Add Stock": screen_addstock, "Production": screen_production, "Dispatch": screen_dispatch, "WhatsApp": screen_wa, "Orders": screen_orders, "Returns": screen_returns,
            "Raw & Waste": screen_raw, "Count": screen_count, "Reports": screen_reports, "Fix entries": screen_fix, "Admin": screen_admin}
 
 st.markdown('<div class="eg-hero"><div><div class="t">🌿 Evergreen Stock%s</div><div class="s">Evergreen Irrigation · %s</div></div><div class="pill">%s</div></div>' % ("" if LIVE else " · TRIAL", date.today().strftime("%a, %d %b %Y"), html.escape(str(ME))), unsafe_allow_html=True)

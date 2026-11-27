@@ -4,13 +4,13 @@ import pandas as pd
 from store import SCHEMA, new_id, stamp, today, hash_pin, check_hash, token_hash, new_token, now
 from datetime import timedelta, date as _date
 
-LOGIC_VERSION = "2026-11-27-l"
+LOGIC_VERSION = "2026-11-27-n"
 BUCKETS = ["good", "hold", "bgrade", "recycle", "scrap"]
 BUCKET_NAME = {"good": "Good stock", "hold": "On hold (returns)", "bgrade": "B-grade", "recycle": "To recycle", "scrap": "Scrap"}
 ROLES = ["admin", "supervisor", "operator", "loader", "sales"]
 NAV = {
-    "admin":      ["Stock", "Production", "Dispatch", "Orders", "Customers", "Inward", "Add Stock", "WhatsApp", "Returns", "Raw & Waste", "Count", "Transport", "Reports", "Fix entries", "Admin"],
-    "supervisor": ["Stock", "Production", "Dispatch", "Orders", "Customers", "Inward", "Add Stock", "WhatsApp", "Returns", "Raw & Waste", "Count", "Transport", "Reports", "Fix entries"],
+    "admin":      ["Stock", "Production", "Dispatch", "Orders", "Customers", "Inward", "Add Stock", "WhatsApp", "Returns", "Raw & Waste", "Count", "Transport", "Summary", "Reports", "Fix entries", "Admin"],
+    "supervisor": ["Stock", "Production", "Dispatch", "Orders", "Customers", "Inward", "Add Stock", "WhatsApp", "Returns", "Raw & Waste", "Count", "Transport", "Summary", "Reports", "Fix entries"],
     "operator":   ["Stock", "Production", "Inward", "Add Stock", "Raw & Waste", "Count"],
     "loader":     ["Stock", "Dispatch", "Customers", "Inward", "Returns"],
     "sales":      ["Stock", "Orders", "Customers", "Returns"],
@@ -673,14 +673,14 @@ def sync_register(store):
 
 
 # ---------- daily backup, today's movement ----------
+BACKUP_DAYS = 7
 def backup_now(store, day):
-    """One tab called 'Backup' holding Items, Moves and Orders as they are now. It is rewritten each day, never added to; the old dated Backup tabs are removed."""
-    rows = [["BACKUP", day, stamp()], [], ["ITEMS"], SCHEMA["Items"]]
-    rows += [[r.get(c, "") for c in SCHEMA["Items"]] for r in store.rows("Items")]
-    rows += [[], ["MOVES"], SCHEMA["Moves"]] + [[r.get(c, "") for c in SCHEMA["Moves"]] for r in store.rows("Moves")]
-    rows += [[], ["ORDERS"], SCHEMA["Orders"]] + [[r.get(c, "") for c in SCHEMA["Orders"]] for r in store.rows("Orders")]
-    store.b.replace_tab("Backup", rows, header_rows=1)
-    store.b.prune_tabs("Backup 20", 0)     # the old 'Backup 2026-..' day tabs
+    """A dated tab 'Backup YYYY-MM-DD' with Items, Moves, Orders, Freight and Fleet as they are now. One new tab a day; only the last BACKUP_DAYS days are kept."""
+    rows = [["BACKUP", day, stamp()]]
+    for t in ("Items", "Moves", "Orders", "Freight", "Fleet"):
+        rows += [[], [t.upper()], SCHEMA[t]] + [[r.get(c, "") for c in SCHEMA[t]] for r in store.rows(t)]
+    store.b.replace_tab("Backup " + day, rows, header_rows=1)
+    store.b.prune_tabs("Backup", BACKUP_DAYS)
 
 def today_movement(items_rows, moves_rows, day=None):
     day = day or today(); items = items_df(items_rows, False).set_index("id"); mv = moves_df(moves_rows)
@@ -738,10 +738,17 @@ def set_freight(store, user, ref, day, vehicle, party, transporter, amount, note
     """Cost of one drop (one customer on one trip). amount None/'' = not decided yet."""
     amt = "" if amount in (None, "") else round(f(amount), 2)
     if amt != "" and amt < 0: raise Problem("The cost cannot be negative.")
-    row = dict(ref=ref, ts=stamp(), date=day, vehicle=vehicle, party=party, transporter=" ".join(str(transporter or "").split()), amount=amt, note=note, user=user)
+    row = dict(ref=ref, ts=stamp(), date=day, vehicle=vehicle, party=party, transporter=" ".join(str(transporter or "").split()), amount=amt, note=note, user=user, paid="", paid_on="")
     r = next((x for x in store.rows("Freight") if x["ref"] == ref), None)
-    if r: store.update("Freight", r["_r"], row)
+    if r: row["paid"] = r.get("paid", ""); row["paid_on"] = r.get("paid_on", ""); store.update("Freight", r["_r"], row)
     else: store.append("Freight", [row])
+
+def set_paid(store, user, refs, day, paid=True):
+    """Mark the cost of these vehicle trips as paid to the transporter (or back to unpaid)."""
+    for ref in refs:
+        r = next((x for x in store.rows("Freight") if x["ref"] == ref), None)
+        if r and r["amount"] not in ("", None):
+            row = dict(r); row["paid"] = "1" if paid else ""; row["paid_on"] = day if paid else ""; store.update("Freight", r["_r"], row)
 
 def trip_key(day, vehicle, tno=""):
     return "T|%s|%s|%s" % (day, vkey(vehicle), str(tno).strip() or "1")
@@ -761,6 +768,40 @@ def freight_drops(store, d1, d2, with_own=False):
         x = fr.get(k)
         tr = (x["transporter"] if x and x["transporter"] else "") or transporter_of(store, e["vehicle"])
         amt = None if (not x or x["amount"] in ("", None)) else f(x["amount"])
-        out.append(dict(e, party=", ".join(e["parties"]), transporter=tr, amount=amt, note=x["note"] if x else ""))
+        out.append(dict(e, party=", ".join(e["parties"]), transporter=tr, amount=amt, note=x["note"] if x else "", paid=bool(x and str(x.get("paid", "")) in ("1", "True", "true")), paid_on=(x.get("paid_on", "") if x else "")))
     if not with_own: out = [x for x in out if x["transporter"] != PERSONAL]
     return sorted(out, key=lambda r: (r["date"], r["vehicle"], r["trip"]), reverse=True)
+
+
+# ---------- period summary and item movement ----------
+def period_summary(store, d1, d2):
+    """What was made, what was sent, who got most, transport cost and what is pending, between d1 and d2."""
+    items = items_df(store.rows("Items"), False).set_index("id"); made = {}; sent = {}; cust = {}
+    for m in store.rows("Moves"):
+        if not (d1 <= m["date"] <= d2) or str(m["void"]) in ("1", "True", "true", "1.0") or m["bucket"] != "good": continue
+        cat = items.loc[m["item_id"], "category"] if m["item_id"] in items.index else "Other"; q = abs(f(m["qty"]))
+        if m["type"] == "production": made[cat] = made.get(cat, 0.0) + f(m["qty"])
+        elif m["type"] == "dispatch":
+            sent[cat] = sent.get(cat, 0.0) + q; p = " ".join(str(m["party"]).split()) or "(no customer)"; cust[p] = cust.get(p, 0.0) + q
+    fr = freight_drops(store, d1, d2)
+    by_tr = {}
+    for x in fr:
+        e = by_tr.setdefault(x["transporter"] or "(not allotted)", dict(trips=0, cost=0.0, undecided=0)); e["trips"] += 1
+        if x["amount"] is None: e["undecided"] += 1
+        else: e["cost"] += x["amount"]
+    return dict(made=made, sent=sent, cust=dict(sorted(cust.items(), key=lambda kv: -kv[1])), transport=by_tr, pending=len(pending_orders(store)))
+
+def item_movement(store, days=60):
+    """Per item: stock now, made and sent in the last `days`, days since last sent, and a tag: Fast, Slow, Dead stock (stock but nothing sent for `days`)."""
+    items = items_df(store.rows("Items")); mv = moves_df(store.rows("Moves")); tab = stock_table(items, mv).set_index("id")
+    live = mv[(~mv["void"]) & (mv["bucket"] == "good")]; start = str(_date.fromisoformat(today()) - timedelta(days=days))
+    out = []
+    for iid, row in tab.iterrows():
+        d = live[(live["item_id"] == iid) & (live["type"] == "dispatch")]; p = live[(live["item_id"] == iid) & (live["type"] == "production")]
+        sent = -d[d["date"] >= start]["qty"].sum(); made = p[p["date"] >= start]["qty"].sum(); last = d["date"].max() if len(d) else ""
+        stock = row["good"]
+        if stock <= 0 and sent <= 0: continue
+        perday = sent / days; cover = (stock / perday) if perday > 0 else None
+        tag = "Dead stock" if (stock > 0 and sent <= 0) else ("Fast" if (cover is not None and cover < 14) else ("Slow" if (cover is not None and cover > 90) else "Normal"))
+        out.append(dict(Item="%s %s" % (row["brand"], row["name"]), Category=row["category"], Unit=row["unit"], Stock=stock, Made=made, Sent=sent, Last_sent=last, Cover_days=cover, Tag=tag))
+    return pd.DataFrame(out, columns=["Item", "Category", "Unit", "Stock", "Made", "Sent", "Last_sent", "Cover_days", "Tag"])
