@@ -104,9 +104,10 @@ class SheetsBackend:
         if need:
             self._call("POST", "%s/%s:batchUpdate" % (self.API, self.sid),
                        json={"requests": [{"addSheet": {"properties": {"title": t}}} for t in need]})
-        for t in SCHEMA:
-            r = self._call("GET", "%s/%s/values/%s!1:1" % (self.API, self.sid, t))
-            have_h = (r.get("values") or [[]])[0]
+        q = "&".join("ranges=%s!1:1" % t for t in SCHEMA)
+        r = self._call("GET", "%s/%s/values:batchGet?%s" % (self.API, self.sid, q))      # one call for every header row
+        for t, vr in zip(SCHEMA, r.get("valueRanges", [])):
+            have_h = (vr.get("values") or [[]])[0]
             if not have_h or (have_h != SCHEMA[t] and have_h == SCHEMA[t][:len(have_h)]):     # new sheet, or a newer version added columns
                 self._call("PUT", "%s/%s/values/%s!A1?valueInputOption=RAW" % (self.API, self.sid, t), json={"values": [SCHEMA[t]]})
     def read_all(self):

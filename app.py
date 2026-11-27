@@ -10,16 +10,15 @@ import importlib
 import logic as L
 import wa
 import store as _store
-RELEASE = "2026-11-27-o"        # change on every release; it makes the app reload its own parts after an update
+RELEASE = "2026-11-27-p"        # change on every release; it makes the app reload its own parts after an update
 if getattr(L, "LOGIC_VERSION", None) != RELEASE or "Fleet" not in _store.SCHEMA:
     importlib.reload(_store); importlib.reload(L)
 from store import Store, LocalBackend, SheetsBackend, today, new_id, SCHEMA
 
 st.set_page_config(page_title="Evergreen Stock", page_icon="🌿", layout="wide", initial_sidebar_state="collapsed")
 st.markdown("""<style>
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
 :root{--g1:#0f5132;--g2:#1b7f4b;--g3:#e7f4ec;--ink:#17261d;--mute:#5f7366;--line:#e3ebe5;--card:#ffffff;--bg:#f4f7f5}
-html,body,.stApp,.stApp p,.stApp label,.stApp button,.stApp input,.stApp textarea,.stApp h1,.stApp h2,.stApp h3,.stApp li,.stApp td,.stApp th{font-family:'Inter',system-ui,-apple-system,'Segoe UI',sans-serif}
+html,body,.stApp,.stApp p,.stApp label,.stApp button,.stApp input,.stApp textarea,.stApp h1,.stApp h2,.stApp h3,.stApp li,.stApp td,.stApp th{font-family:system-ui,-apple-system,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif}
 span[data-testid="stIconMaterial"]{font-family:'Material Symbols Rounded'!important}
 .stApp{background:var(--bg)}
 header[data-testid="stHeader"]{background:transparent}
@@ -434,6 +433,8 @@ def draft_save(screen, keys, pre=None):
             if isinstance(v, str) and v: snap[k] = v
     key = "_dl_" + screen
     if st.session_state.get(key) == snap: return
+    if snap and time.time() - st.session_state.get("_dlt_" + screen, 0) < 6: return      # at most one write every few seconds, so typing stays fast
+    st.session_state["_dlt_" + screen] = time.time()
     st.session_state[key] = snap
     try: L.draft_put(S, ME, screen, snap or None)
     except Exception as e: act("draft_error", str(e)[:120], "error")
