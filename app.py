@@ -10,7 +10,7 @@ import importlib
 import logic as L
 import wa
 import store as _store
-RELEASE = "2026-11-27-e"        # change on every release; it makes the app reload its own parts after an update
+RELEASE = "2026-11-27-f"        # change on every release; it makes the app reload its own parts after an update
 if getattr(L, "LOGIC_VERSION", None) != RELEASE:
     importlib.reload(_store); importlib.reload(L)
 from store import Store, LocalBackend, SheetsBackend, today, new_id, SCHEMA
@@ -314,7 +314,8 @@ def screen_stock():
     cols = ["category", "brand", "name", "unit", "good", "hold"] + (["price", "value"] if IS_ADMIN else [])
     out = v[cols].rename(columns={"category": "Category", "brand": "Brand", "name": "Item", "unit": "Unit", "good": "In stock", "hold": "On hold", "price": "Price", "value": "Value"})
     cfg = {"In stock": st.column_config.NumberColumn(format="%g"), "On hold": st.column_config.NumberColumn(format="%g")}
-    if IS_ADMIN: cfg.update({"Price": st.column_config.NumberColumn(format="₹%g"), "Value": st.column_config.NumberColumn(format="₹%d")})
+    if IS_ADMIN:
+        cfg.update({"Price": st.column_config.NumberColumn(format="₹%g")}); out["Value"] = out["Value"].map(L.money)
     st.dataframe(out, hide_index=True, **WIDE, column_config=cfg, height=min(640, 38 + 35 * max(len(out), 2)))
     st.caption("%d items shown. Other places stock can sit: B-grade %s · To recycle %s · Scrap %s" % (len(out), L.fmt(tab["bgrade"].sum()), L.fmt(tab["recycle"].sum()), L.fmt(tab["scrap"].sum())))
 
@@ -793,7 +794,7 @@ def screen_reports():
         else: c3.metric("On hold", L.fmt(v["hold"].sum()))
         cols = ["category", "brand", "name", "unit", "good", "hold"] + (["price", "value"] if IS_ADMIN else [])
         cc = {"category": "Category", "brand": "Brand", "name": "Item", "unit": "Unit", "good": st.column_config.NumberColumn("In stock", format="%g"), "hold": st.column_config.NumberColumn("On hold", format="%g")}
-        if IS_ADMIN: cc.update({"price": st.column_config.NumberColumn("Price", format="₹%g"), "value": st.column_config.NumberColumn("Value", format="₹%d")})
+        if IS_ADMIN: cc.update({"price": st.column_config.NumberColumn("Price", format="₹%g"), "value": "Value"}); v = v.assign(value=v["value"].map(L.money))
         st.dataframe(v[cols], hide_index=True, column_config=cc, **WIDE)
         st.download_button("Download stock sheet (CSV)", v[cols].to_csv(index=False), "stock.csv", "text/csv")
 
