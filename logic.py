@@ -4,13 +4,13 @@ import pandas as pd
 from store import SCHEMA, new_id, stamp, today, hash_pin, check_hash, token_hash, new_token, now
 from datetime import timedelta, date as _date
 
-LOGIC_VERSION = "2026-11-28-e"
+LOGIC_VERSION = "2026-11-28-f"
 BUCKETS = ["good", "hold", "bgrade", "recycle", "scrap"]
 BUCKET_NAME = {"good": "Good stock", "hold": "On hold (returns)", "bgrade": "B-grade", "recycle": "To recycle", "scrap": "Scrap"}
 ROLES = ["admin", "supervisor", "operator", "loader", "sales"]
 NAV = {
-    "admin":      ["Stock", "Production", "Dispatch", "Orders", "Customers", "Inward", "Add Stock", "WhatsApp", "Returns", "Raw & Waste", "Count", "Transport", "Summary", "Reports", "Fix entries", "Admin"],
-    "supervisor": ["Stock", "Production", "Dispatch", "Orders", "Customers", "Inward", "Add Stock", "WhatsApp", "Returns", "Raw & Waste", "Count", "Transport", "Summary", "Reports", "Fix entries"],
+    "admin":      ["Stock", "Production", "Dispatch", "Orders", "Customers", "Inward", "Add Stock", "WhatsApp", "Returns", "Raw & Waste", "Count", "Transport", "Sprinkler loads", "Summary", "Reports", "Fix entries", "Admin"],
+    "supervisor": ["Stock", "Production", "Dispatch", "Orders", "Customers", "Inward", "Add Stock", "WhatsApp", "Returns", "Raw & Waste", "Count", "Transport", "Sprinkler loads", "Summary", "Reports", "Fix entries"],
     "operator":   ["Stock", "Production", "Inward", "Add Stock", "Raw & Waste", "Count"],
     "loader":     ["Stock", "Dispatch", "Customers", "Inward", "Returns"],
     "sales":      ["Stock", "Orders", "Customers", "Returns"],
@@ -773,6 +773,11 @@ def freight_drops(store, d1, d2, with_own=False, with_settled=False):
         p = " ".join(str(m["party"]).split()) or "(no customer named)"
         if p.lower() not in [x.lower() for x in e["parties"]]: e["parties"].append(p)
         e["qty"] += abs(f(m["qty"]))
+    for ld in store.rows("Loads"):
+        if str(ld["void"]) in ("1", "True", "true", "1.0") or not (d1 <= ld["date"] <= d2): continue
+        k = trip_key(ld["date"], ld["vehicle"], ld["round"])
+        e = g.setdefault(k, dict(ref=k, date=ld["date"], vehicle=" ".join(str(ld["vehicle"]).split()), trip=str(ld["round"]).strip() or "1", parties=[], qty=0.0))
+        e["parties"].append("Sprinkler load" + ((" (%s sets)" % fmt(ld["sets"])) if f(ld["sets"]) > 0 else ""))
     out = []
     for k, e in g.items():
         x = fr.get(k)
@@ -784,6 +789,39 @@ def freight_drops(store, d1, d2, with_own=False, with_settled=False):
         sd = {t: settled_upto(store, t) for t in {x["transporter"] for x in out} if t}
         out = [x for x in out if not (x["transporter"] and sd.get(x["transporter"]) and x["date"] <= sd[x["transporter"]])]
     return sorted(out, key=lambda r: (r["date"], r["vehicle"], r["trip"]), reverse=True)
+
+
+# ---------- sprinkler loads (no stock effect; they only feed the transport screens) ----------
+def add_load(store, user, day, vehicle, rnd, sets, note=""):
+    v = " ".join(str(vehicle or "").upper().split())
+    if not v: raise Problem("Enter the vehicle number.")
+    r = int(f(rnd, 1)) if f(rnd, 1) >= 1 else 1
+    store.append("Loads", [dict(id=new_id(), ts=stamp(), date=day, vehicle=v, round=r, sets=round(max(f(sets), 0), 3) or "", note=note, user=user, void="")])
+
+def void_load(store, load_id):
+    r = next((x for x in store.rows("Loads") if x["id"] == load_id), None)
+    if r: row = dict(r); row["void"] = "1"; store.update("Loads", r["_r"], row)
+
+def vehicle_rounds_today(store, day, vehicle):
+    """Rounds already recorded for this vehicle on this day (stock dispatches and sprinkler loads): {round: what}."""
+    out = {}
+    for m in store.rows("Moves"):
+        if m["type"] == "dispatch" and m["date"] == day and vkey(m["vehicle"]) == vkey(vehicle) and str(m["void"]) not in ("1", "True", "true", "1.0"):
+            out[str(m["shift"]).strip() or "1"] = "stock dispatch"
+    for ld in store.rows("Loads"):
+        if ld["date"] == day and vkey(ld["vehicle"]) == vkey(vehicle) and str(ld["void"]) not in ("1", "True", "true", "1.0"):
+            out[str(ld["round"]).strip() or "1"] = "sprinkler load"
+    return out
+
+def vehicle_rounds(store, d1, d2):
+    """Per vehicle: days it went, rounds, transporter and cost, for stock dispatches and sprinkler loads together."""
+    g = {}
+    for x in freight_drops(store, d1, d2, with_own=True, with_settled=False):
+        e = g.setdefault(vkey(x["vehicle"]), dict(Vehicle=x["vehicle"], Transporter=x["transporter"], days=set(), Rounds=0, Cost=0.0, Undecided=0))
+        e["days"].add(x["date"]); e["Rounds"] += 1
+        if x["amount"] is None: e["Undecided"] += 1
+        else: e["Cost"] += x["amount"]
+    return [dict(Vehicle=e["Vehicle"], Transporter=e["Transporter"] or "(not allotted)", Days=len(e["days"]), Rounds=e["Rounds"], Cost=e["Cost"], Undecided=e["Undecided"]) for e in sorted(g.values(), key=lambda e: e["Vehicle"])]
 
 
 # ---------- period summary and item movement ----------

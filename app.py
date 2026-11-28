@@ -10,7 +10,7 @@ import importlib
 import logic as L
 import wa
 import store as _store
-RELEASE = "2026-11-28-e"        # change on every release; it makes the app reload its own parts after an update
+RELEASE = "2026-11-28-f"        # change on every release; it makes the app reload its own parts after an update
 if getattr(L, "LOGIC_VERSION", None) != RELEASE or "Fleet" not in _store.SCHEMA:
     importlib.reload(_store); importlib.reload(L)
 from store import Store, LocalBackend, SheetsBackend, today, new_id, SCHEMA
@@ -831,6 +831,38 @@ def screen_transport():
             else: st.error("Type both the vehicle number and the transporter.")
 
 
+def screen_sprinkler():
+    st.subheader("Sprinkler loads")
+    st.caption("Record each sprinkler load that leaves, only for transport. It does not change any stock. It joins the vehicle's trips in Transport, where you can also set the cost.")
+    vehs = sorted({" ".join(str(r["vehicle"]).split()) for r in S.rows("Fleet") if r["vehicle"]} | {" ".join(str(r["vehicle"]).split()) for r in S.rows("Loads") if r["vehicle"]})
+    vp = combo("Vehicle number", vehs, "sp_veh", "Type or choose the vehicle")
+    c1, c2 = st.columns(2)
+    day = c1.date_input("Date", value=date.today(), max_value=date.today(), key="sp_day")
+    done = L.vehicle_rounds_today(S, str(day), vp) if (vp or "").strip() else {}
+    nxt = (max([int(k) for k in done if str(k).isdigit()] + [0]) + 1) if any(v == "sprinkler load" for v in done.values()) else 1
+    rnd = c2.number_input("Round of the day", min_value=1, value=nxt, step=1, key="sp_rnd_%s_%s_%s" % (L.vkey(vp or ""), day, nxt))
+    if done: st.info("This vehicle already has on %s: %s. Using the same round number as a stock dispatch makes them one trip with one cost." % (day.strftime("%d %b"), ", ".join("round %s (%s)" % (k, v) for k, v in sorted(done.items()))))
+    with st.form("spl", clear_on_submit=True):
+        sets = qty_box("Sets or farmers in this load (optional)")
+        cost = st.number_input("Transport cost for this round (leave 0 to decide later)", min_value=0.0, value=0.0, step=100.0, format="%g")
+        note = st.text_input("Note (optional, e.g. taluk)")
+        if st.form_submit_button("Save load", type="primary"):
+            if not (vp or "").strip(): st.error("Choose or type the vehicle first.")
+            elif run(L.add_load, ME, str(day), vp, rnd, sets or 0, note, ok="Load saved"):
+                if cost > 0: L.set_freight(S, ME, L.trip_key(str(day), vp, int(rnd)), str(day), " ".join(vp.upper().split()), "Sprinkler", L.transporter_of(S, vp), cost)
+                st.rerun()
+    td = date.today(); d1 = td.replace(day=1)
+    vr = L.vehicle_rounds(S, str(d1), str(td))
+    if vr: df_share("Vehicles and rounds this month", pd.DataFrame(vr).assign(Cost=lambda d: d["Cost"].map(L.money)), sub="%s to %s, after settled dates" % (d1.strftime("%d %b"), td.strftime("%d %b")))
+    st.markdown("**Latest sprinkler loads**")
+    rows = [r for r in reversed(S.rows("Loads")) if str(r["void"]) not in ("1", "True", "true")][:12]
+    if not rows: st.caption("None yet.")
+    for r in rows:
+        a, b = st.columns([5, 1.3])
+        a.write("**%s** · round %s%s  \n%s · %s%s" % (r["vehicle"], r["round"], (" · %s sets" % L.fmt(r["sets"])) if L.f(r["sets"]) > 0 else "", r["date"], r["user"], (" · " + r["note"]) if r["note"] else ""))
+        if b.button("Undo", key="ul_" + r["id"]): L.void_load(S, r["id"]); act("load_undone", r["id"]); st.rerun()
+
+
 def screen_customers():
     st.subheader("Customers")
     parties = L.all_parties(S)
@@ -1394,7 +1426,7 @@ def screen_wa():
         else: wa_review(parsed, "wp" + hashlib.md5((kind + txt).encode()).hexdigest()[:6])
 
 
-SCREENS = {"Summary": screen_summary, "Transport": screen_transport, "Customers": screen_customers, "Stock": screen_stock, "Inward": screen_inward, "Add Stock": screen_addstock, "Production": screen_production, "Dispatch": screen_dispatch, "WhatsApp": screen_wa, "Orders": screen_orders, "Returns": screen_returns,
+SCREENS = {"Sprinkler loads": screen_sprinkler, "Summary": screen_summary, "Transport": screen_transport, "Customers": screen_customers, "Stock": screen_stock, "Inward": screen_inward, "Add Stock": screen_addstock, "Production": screen_production, "Dispatch": screen_dispatch, "WhatsApp": screen_wa, "Orders": screen_orders, "Returns": screen_returns,
            "Raw & Waste": screen_raw, "Count": screen_count, "Reports": screen_reports, "Fix entries": screen_fix, "Admin": screen_admin}
 
 st.markdown('<div class="eg-hero"><div><div class="t">🌿 Evergreen Stock%s</div><div class="s">Evergreen Irrigation · %s</div></div><div class="pill">%s</div></div>' % ("" if LIVE else " · TRIAL", date.today().strftime("%a, %d %b %Y"), html.escape(str(ME))), unsafe_allow_html=True)

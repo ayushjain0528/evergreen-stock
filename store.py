@@ -14,6 +14,7 @@ SCHEMA = {
     "Drafts":   ["user", "screen", "data", "ts"],
     "Fleet":    ["vehicle", "transporter", "ts"],
     "Freight":  ["ref", "ts", "date", "vehicle", "party", "transporter", "amount", "note", "user", "paid", "paid_on"],
+    "Loads":    ["id", "ts", "date", "vehicle", "round", "sets", "note", "user", "void"],
     "Log":      ["ts", "date", "user", "role", "action", "screen", "detail", "result", "ms"],
 }
 READ = [t for t in SCHEMA if t != "Log"]      # the activity log is write-only for the app (it can grow large)
