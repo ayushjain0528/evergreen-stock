@@ -4,7 +4,7 @@ import pandas as pd
 from store import SCHEMA, new_id, stamp, today, hash_pin, check_hash, token_hash, new_token, now
 from datetime import timedelta, date as _date
 
-LOGIC_VERSION = "2026-11-28-f"
+LOGIC_VERSION = "2026-11-28-g"
 BUCKETS = ["good", "hold", "bgrade", "recycle", "scrap"]
 BUCKET_NAME = {"good": "Good stock", "hold": "On hold (returns)", "bgrade": "B-grade", "recycle": "To recycle", "scrap": "Scrap"}
 ROLES = ["admin", "supervisor", "operator", "loader", "sales"]
@@ -395,6 +395,31 @@ def add_order(store, user, party, item_id, qty, due, note=""):
 def set_order_status(store, oid, status):
     o = next((x for x in store.rows("Orders") if x["id"] == oid), None)
     if o: row = dict(o); row["status"] = status; store.update("Orders", o["_r"], row)
+
+def edit_order(store, user, order_id, item_id=None, qty=None, due=None, party=None, status=None, note=None):
+    """Correct a saved order in place (item, quantity, due date, customer, status, note). The old values are written into the note with the person's name."""
+    o = next((x for x in store.rows("Orders") if x["id"] == order_id), None)
+    if not o: raise Problem("Order not found.")
+    row = dict(o); ch = []
+    if item_id and item_id != o["item_id"]:
+        if not any(x["id"] == item_id for x in store.rows("Items")): raise Problem("Choose the item.")
+        ch.append("item %s -> %s" % (_item_name(store, o["item_id"]), _item_name(store, item_id))); row["item_id"] = item_id
+    if qty is not None:
+        q = check_qty(qty)
+        if abs(q - f(o["qty"])) > 1e-9:
+            if q < f(o.get("sent")) - 1e-9: raise Problem("%s already sent against this order, so the quantity cannot be less than that." % fmt(f(o.get("sent"))))
+            ch.append("qty %s -> %s" % (fmt(f(o["qty"])), fmt(q))); row["qty"] = q
+    if due is not None and str(due) != str(o["due"]): ch.append("due %s -> %s" % (o["due"] or "-", due)); row["due"] = str(due)
+    if party is not None:
+        p = " ".join(str(party).split())
+        if not p: raise Problem("Enter the customer name.")
+        if p != " ".join(str(o["party"]).split()): ch.append("customer %s -> %s" % (o["party"], p)); row["party"] = p
+    if status is not None and status != o["status"]: ch.append("status %s -> %s" % (o["status"], status)); row["status"] = status
+    if note is not None and note.strip() != str(o["note"]).split(" [")[0].strip():
+        row["note"] = note.strip(); ch.append("note changed")
+    if not ch: return 0
+    row["note"] = (str(row["note"]) + " [fixed by %s: %s]" % (user, "; ".join(ch))).strip(); store.update("Orders", o["_r"], row)
+    return 1
 
 def to_produce(store):
     items = items_df(store.rows("Items"), False); st = stock_table(items, moves_df(store.rows("Moves"))).set_index("id")

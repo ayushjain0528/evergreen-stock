@@ -10,7 +10,7 @@ import importlib
 import logic as L
 import wa
 import store as _store
-RELEASE = "2026-11-28-f"        # change on every release; it makes the app reload its own parts after an update
+RELEASE = "2026-11-28-g"        # change on every release; it makes the app reload its own parts after an update
 if getattr(L, "LOGIC_VERSION", None) != RELEASE or "Fleet" not in _store.SCHEMA:
     importlib.reload(_store); importlib.reload(L)
 from store import Store, LocalBackend, SheetsBackend, today, new_id, SCHEMA
@@ -1240,7 +1240,7 @@ def screen_fix():
     st.caption("Pick a saved entry and correct it. Nothing is deleted: the old value is written into the entry's note with your name.")
     names = {r["id"]: ("%s | %s" % (r["brand"], r["name"]) if r["brand"] and r["brand"].lower() != "evergreen" else r["name"]) for _, r in items.iterrows()}
     units = items.set_index("id")["unit"].to_dict()
-    t1, t2, t3 = st.tabs(["Fix one entry", "Move many to another item", "Rename an item"])
+    t1, t2, t3, t4 = st.tabs(["Fix one entry", "Move many to another item", "Rename an item", "Fix an order"])
     TYPES = {"All": None, "Dispatch": ("dispatch",), "Production": ("production",), "Inward": ("inward",), "Stock added / opening": ("opening",), "Raw / waste": ("raw_in", "raw_use", "waste")}
     def pool(prefix):
         c1, c2 = st.columns(2); tp = c1.selectbox("Type", list(TYPES), key=prefix + "_t"); q = c2.text_input("Search (item, customer, vehicle)", key=prefix + "_q")
@@ -1323,6 +1323,37 @@ def screen_fix():
                     else: st.info("Nothing was different.")
                 except L.Problem as e: st.error(str(e))
                 except Exception as e: st.error("Could not save. (%s)" % str(e)[:160])
+    with t4:
+        st.caption("Correct an order: the item, quantity, due date, customer or status. The old value is kept in the order's note with your name.")
+        c1, c2 = st.columns(2); show = c1.selectbox("Show", ["Open orders", "All orders"], key="fo_s"); oq = c2.text_input("Search (customer or item)", key="fo_q")
+        ords = [o for o in S.rows("Orders") if show == "All orders" or o["status"] == "open"]
+        if oq.strip():
+            ql = oq.strip().lower(); ords = [o for o in ords if ql in (o["party"] + " " + names.get(o["item_id"], o["item_id"])).lower()]
+        ords = sorted(ords, key=lambda o: (o["date"], o["ts"]), reverse=True)[:150]
+        def olab(o): return "%s · %s · %s %s%s · due %s" % (o["party"], names.get(o["item_id"], o["item_id"]), L.fmt(L.f(o["qty"])), units.get(o["item_id"], ""), "" if o["status"] == "open" else " (%s)" % o["status"], o["due"][5:] if o["due"] else "-")
+        if not ords: st.info("No orders found.")
+        else:
+            op = st.selectbox("Order to fix (%d shown)" % len(ords), [o["id"] for o in ords], index=None, placeholder="Choose the order", format_func=lambda i: next((olab(o) for o in ords if o["id"] == i), str(i)), key="fo_pick")
+            o = next((x for x in ords if x["id"] == op), None)
+            if o:
+                st.markdown("**Now:** " + olab(o) + (" · already sent %s" % L.fmt(L.f(o["sent"])) if L.f(o.get("sent")) > 0 else ""))
+                st.markdown("**Change the item** (leave empty to keep the same item)")
+                nit = pick_item("foi", items)
+                c3, c4 = st.columns(2)
+                oqty = c3.number_input("Quantity", min_value=0.0, value=float(L.f(o["qty"])), step=1.0, format="%g", key="fo_q_" + o["id"])
+                try: dv = date.fromisoformat(o["due"])
+                except Exception: dv = date.today()
+                odue = c4.date_input("Due date", value=dv, key="fo_d_" + o["id"])
+                oparty = st.text_input("Customer", value=o["party"], key="fo_p_" + o["id"])
+                sts = ["open", "done", "cancelled"]; ost = st.selectbox("Status", sts, index=sts.index(o["status"]) if o["status"] in sts else 0, format_func=lambda s: {"open": "Open (pending)", "done": "Done", "cancelled": "Dropped"}[s], key="fo_st_" + o["id"])
+                onote = st.text_input("Note", value=str(o["note"]).split(" [")[0], key="fo_n_" + o["id"])
+                if st.button("Save the order", type="primary", key="fo_save"):
+                    try:
+                        n = L.edit_order(S, ME, o["id"], item_id=(nit["id"] if nit is not None else None), qty=oqty, due=str(odue), party=oparty, status=ost, note=onote)
+                        if n: act("fix_order", o["id"]); st.toast("Order corrected", icon="✅"); reset_picker("foi"); st.rerun()
+                        else: st.info("Nothing was different.")
+                    except L.Problem as e: st.error(str(e))
+                    except Exception as e: st.error("Could not save. (%s)" % str(e)[:160])
     st.caption("Note: fixing a dispatch does not change the orders it ticked off. A return needs to be entered on the Returns screen.")
 
 
