@@ -10,7 +10,7 @@ import importlib
 import logic as L
 import wa
 import store as _store
-RELEASE = "2026-11-28-c"        # change on every release; it makes the app reload its own parts after an update
+RELEASE = "2026-11-28-e"        # change on every release; it makes the app reload its own parts after an update
 if getattr(L, "LOGIC_VERSION", None) != RELEASE or "Fleet" not in _store.SCHEMA:
     importlib.reload(_store); importlib.reload(L)
 from store import Store, LocalBackend, SheetsBackend, today, new_id, SCHEMA
@@ -29,7 +29,7 @@ header[data-testid="stHeader"]{background:transparent}
 .eg-hero .s{font-size:.82rem;opacity:.85;margin-top:.15rem}
 .eg-hero .pill{background:rgba(255,255,255,.16);border:1px solid rgba(255,255,255,.3);border-radius:999px;padding:.3rem .75rem;font-size:.8rem;font-weight:600;white-space:nowrap}
 /* page menu as pills */
-.st-key-menu div[role="radiogroup"]{flex-wrap:nowrap!important;overflow-x:auto;gap:.4rem!important;padding:.2rem .1rem .5rem;scrollbar-width:none}
+.st-key-menu div[role="radiogroup"]{flex-wrap:wrap!important;overflow:visible;gap:.35rem!important;padding:.2rem .1rem .4rem}
 .st-key-menu div[role="radiogroup"]::-webkit-scrollbar{display:none}
 .st-key-menu div[role="radiogroup"]>div{flex:0 0 auto}
 .st-key-menu label[data-testid="stRadioOption"],.st-key-menu label[data-baseweb="radio"]{background:var(--card);border:1px solid var(--line);border-radius:999px;padding:.42rem .95rem;margin:0;white-space:nowrap;cursor:pointer;transition:all .15s;box-shadow:0 1px 2px rgba(0,0,0,.04);flex:0 0 auto}
@@ -71,7 +71,9 @@ div[data-baseweb="tab-highlight"]{background:var(--g2);height:3px;border-radius:
 h3,h2{letter-spacing:-.01em;color:var(--ink)}
 div[data-testid="stAlert"]{border-radius:12px}
 hr{border-color:var(--line)}
-@media(min-width:900px){.st-key-menu div[role="radiogroup"]{flex-wrap:wrap!important;overflow:visible!important}}
+@media(max-width:640px){.st-key-menu label[data-testid="stRadioOption"],.st-key-menu label[data-baseweb="radio"]{padding:.3rem .7rem}.st-key-menu label p{font-size:.82rem}}
+html,body,.stApp,[data-testid="stMain"],[data-testid="stAppViewContainer"]{overflow-x:hidden!important;max-width:100vw}.st-key-menu{max-width:100%;overflow:hidden}
+@media(max-width:640px){div[data-testid="stMetricValue"],div[data-testid="stMetricValue"] *{white-space:nowrap!important;overflow:visible!important;text-overflow:clip!important;line-height:1.15;font-size:.8rem!important}div[data-testid="stMetricLabel"],div[data-testid="stMetricLabel"] *{white-space:normal!important;overflow:visible!important;text-overflow:clip!important;display:block!important;-webkit-line-clamp:unset!important}}
 @media(max-width:640px){div[data-testid="stHorizontalBlock"]:has(div[data-testid="stMetric"]){flex-wrap:nowrap!important;gap:.5rem!important}div[data-testid="stHorizontalBlock"]:has(div[data-testid="stMetric"])>div{min-width:0!important;flex:1 1 0!important}div[data-testid="stMetric"]{padding:.55rem .6rem}div[data-testid="stMetricValue"]{font-size:.92rem}div[data-testid="stMetricLabel"] *{white-space:normal!important;overflow:visible!important;text-overflow:clip!important}div[data-testid="stMetricLabel"] p{font-size:.62rem}.block-container{padding-left:.8rem;padding-right:.8rem}.eg-hero .t{font-size:1.15rem}.eg-hero{padding:.8rem .9rem}}
 </style>""", unsafe_allow_html=True)
 
@@ -296,7 +298,7 @@ def screen_stock():
     if only: v = v[v["good"] > 0]
     m1, m2, m3 = st.columns(3)
     m1.metric("Items in stock", int((tab["good"] > 0).sum()))
-    m2.metric("On hold (returns)", L.fmt(tab["hold"].sum()))
+    m2.metric("On hold", L.fmt(tab["hold"].sum()))
     if IS_ADMIN: m3.metric("Stock value", L.money(tab["value"].sum()))
     else: m3.metric("Low stock", int(((tab["min_level"] > 0) & (tab["good"] < tab["min_level"])).sum()))
     low = tab[(tab["min_level"] > 0) & (tab["good"] < tab["min_level"])]
