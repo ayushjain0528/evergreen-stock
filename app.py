@@ -3,6 +3,7 @@ import html
 import io, os, time, zipfile, hashlib
 from datetime import date, timedelta
 import pandas as pd
+import calendar
 import streamlit as st
 import streamlit.components.v1 as components
 
@@ -10,7 +11,7 @@ import importlib
 import logic as L
 import wa
 import store as _store
-RELEASE = "2026-11-28-g"        # change on every release; it makes the app reload its own parts after an update
+RELEASE = "2026-11-28-h"        # change on every release; it makes the app reload its own parts after an update
 if getattr(L, "LOGIC_VERSION", None) != RELEASE or "Fleet" not in _store.SCHEMA:
     importlib.reload(_store); importlib.reload(L)
 from store import Store, LocalBackend, SheetsBackend, today, new_id, SCHEMA
@@ -851,16 +852,31 @@ def screen_sprinkler():
             elif run(L.add_load, ME, str(day), vp, rnd, sets or 0, note, ok="Load saved"):
                 if cost > 0: L.set_freight(S, ME, L.trip_key(str(day), vp, int(rnd)), str(day), " ".join(vp.upper().split()), "Sprinkler", L.transporter_of(S, vp), cost)
                 st.rerun()
-    td = date.today(); d1 = td.replace(day=1)
-    vr = L.vehicle_rounds(S, str(d1), str(td))
-    if vr: df_share("Vehicles and rounds this month", pd.DataFrame(vr).assign(Cost=lambda d: d["Cost"].map(L.money)), sub="%s to %s, after settled dates" % (d1.strftime("%d %b"), td.strftime("%d %b")))
+    td = date.today(); d1 = td.replace(day=1); d2 = td.replace(day=calendar.monthrange(td.year, td.month)[1])
+    vr = L.vehicle_rounds(S, str(d1), str(d2))
+    if vr: df_share("Vehicles and rounds this month", pd.DataFrame(vr).assign(Cost=lambda d: d["Cost"].map(L.money)), sub="%s to %s, after settled dates" % (d1.strftime("%d %b"), d2.strftime("%d %b")))
     st.markdown("**Latest sprinkler loads**")
     rows = [r for r in reversed(S.rows("Loads")) if str(r["void"]) not in ("1", "True", "true")][:12]
+    frmap = {x["ref"]: x for x in S.rows("Freight")}
     if not rows: st.caption("None yet.")
     for r in rows:
         a, b = st.columns([5, 1.3])
         a.write("**%s** · round %s%s  \n%s · %s%s" % (r["vehicle"], r["round"], (" · %s sets" % L.fmt(r["sets"])) if L.f(r["sets"]) > 0 else "", r["date"], r["user"], (" · " + r["note"]) if r["note"] else ""))
         if b.button("Undo", key="ul_" + r["id"]): L.void_load(S, r["id"]); act("load_undone", r["id"]); st.rerun()
+        ref = L.trip_key(r["date"], r["vehicle"], r["round"]); fx = frmap.get(ref); tcur = (fx["transporter"] if fx and fx["transporter"] else L.transporter_of(S, r["vehicle"])); acur = (L.f(fx["amount"]) if fx and fx["amount"] not in ("", None) else None)
+        head = "Cost and transporter: " + ((tcur or "no transporter yet") + (" · ₹%s" % L.money(acur).replace("₹", "") if acur is not None else " · cost not set"))
+        with st.expander(head):
+            tn = L.transporter_names(S); tk = "ut_" + r["id"]
+            tsel = st.selectbox("Send this vehicle to transporter", tn, index=(tn.index(tcur) if tcur in tn else None), placeholder="Choose the transporter", key=tk)
+            camt = st.number_input("Transport cost for this round (0 = decide later)", min_value=0.0, value=float(acur or 0.0), step=100.0, format="%g", key="uc_" + r["id"])
+            if st.button("Save cost and transporter", key="us_" + r["id"], type="primary"):
+                if not tsel: st.error("Choose the transporter first.")
+                else:
+                    try:
+                        L.set_transporter(S, r["vehicle"], tsel); L.set_freight(S, ME, ref, r["date"], r["vehicle"], "Sprinkler", tsel, camt if camt > 0 else None)
+                        act("sprinkler_cost", "%s %s %s" % (r["vehicle"], tsel, camt)); st.toast("Saved", icon="✅"); st.rerun()
+                    except L.Problem as e: st.error(str(e))
+                    except Exception as e: st.error("Could not save. (%s)" % str(e)[:160])
 
 
 def screen_customers():
