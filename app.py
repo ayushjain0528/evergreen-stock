@@ -10,7 +10,7 @@ import importlib
 import logic as L
 import wa
 import store as _store
-RELEASE = "2026-11-27-p"        # change on every release; it makes the app reload its own parts after an update
+RELEASE = "2026-11-28-a"        # change on every release; it makes the app reload its own parts after an update
 if getattr(L, "LOGIC_VERSION", None) != RELEASE or "Fleet" not in _store.SCHEMA:
     importlib.reload(_store); importlib.reload(L)
 from store import Store, LocalBackend, SheetsBackend, today, new_id, SCHEMA
@@ -40,7 +40,7 @@ header[data-testid="stHeader"]{background:transparent}
 .st-key-menu label[data-selected="true"] p,.st-key-menu label:has(input:checked) p{color:#fff;font-weight:600}
 .sh{background:#fff;border:1px solid var(--line);border-radius:16px;padding:.7rem .8rem;box-shadow:0 2px 8px rgba(23,38,29,.05)}
 .sh-t{font-weight:700;color:var(--g1);font-size:1rem;margin-bottom:.4rem;display:flex;justify-content:space-between;gap:.5rem}.sh-t span{font-weight:500;color:var(--mute);font-size:.8rem}
-.sh table{width:100%;border-collapse:collapse;font-size:.82rem}
+.sh{overflow-x:auto}.sh table{width:100%;border-collapse:collapse;font-size:.82rem}
 .sh th{text-align:left;color:var(--mute);font-weight:600;font-size:.72rem;text-transform:uppercase;letter-spacing:.03em;padding:.35rem .4rem;border-bottom:2px solid var(--line)}
 .sh td{padding:.38rem .4rem;border-bottom:1px solid var(--line);vertical-align:top;word-break:break-word;color:var(--ink)}
 .sh .sm{color:var(--mute);font-size:.72em}.sh .n{text-align:right;white-space:nowrap}.sh .b{font-weight:700;color:#b3261e}
@@ -302,13 +302,13 @@ def screen_stock():
     low = tab[(tab["min_level"] > 0) & (tab["good"] < tab["min_level"])]
     if not low.empty:
         with st.expander("⚠️ Below minimum (%d)" % len(low), expanded=True):
-            st.dataframe(low[["brand", "name", "unit", "good", "min_level"]].rename(columns={"brand": "Brand", "name": "Item", "unit": "Unit", "good": "In stock", "min_level": "Minimum"}), hide_index=True, **WIDE)
+            df_share("Below minimum", low[["brand", "name", "unit", "good", "min_level"]].rename(columns={"brand": "Brand", "name": "Item", "unit": "Unit", "good": "In stock", "min_level": "Minimum"}), bold=("In stock",))
     po = L.pending_orders(S)
     if not po.empty:
         late = int((po["Days_left"].fillna(1) < 0).sum())
         with st.expander("📦 Pending orders (%d lines%s)" % (len(po), ", %d late" % late if late else ""), expanded=bool(late)):
             po = po.copy(); po["When"] = po["Days_left"].map(lambda d: "" if d is None or d != d else ("%d day(s) late" % -d if d < 0 else ("due today" if d == 0 else "in %d day(s)" % d)))
-            st.dataframe(po[["Customer", "Category", "Item", "Pending", "Unit", "Needed_by", "When"]].rename(columns={"Needed_by": "Needed by"}), hide_index=True, **WIDE, column_config={"Pending": st.column_config.NumberColumn(format="%g")})
+            df_share("Pending orders", po[["Customer", "Category", "Item", "Pending", "Unit", "Needed_by", "When"]].rename(columns={"Needed_by": "Needed by"}))
     if CAN_MANAGE:
         with st.expander("📋 Today's summary, ready to copy"):
             st.code(L.daily_summary(S), language=None)
@@ -317,13 +317,13 @@ def screen_stock():
     tm = L.today_movement(S.rows("Items"), S.rows("Moves"))
     with st.expander("Today's movement (%d items)" % len(tm), expanded=not tm.empty):
         if tm.empty: st.caption("Nothing recorded today yet.")
-        else: st.dataframe(tm, hide_index=True, **WIDE, column_config={"In": st.column_config.NumberColumn(format="%g"), "Out": st.column_config.NumberColumn(format="%g")})
+        else: df_share("Today's movement", tm)
     cols = ["category", "brand", "name", "unit", "good", "hold"] + (["price", "value"] if IS_ADMIN else [])
     out = v[cols].rename(columns={"category": "Category", "brand": "Brand", "name": "Item", "unit": "Unit", "good": "In stock", "hold": "On hold", "price": "Price", "value": "Value"})
     cfg = {"In stock": st.column_config.NumberColumn(format="%g"), "On hold": st.column_config.NumberColumn(format="%g")}
     if IS_ADMIN:
         cfg.update({"Price": st.column_config.NumberColumn(format="₹%g")}); out["Value"] = out["Value"].map(L.money)
-    st.dataframe(out, hide_index=True, **WIDE, column_config=cfg, height=min(640, 38 + 35 * max(len(out), 2)))
+    df_share("Stock" if cat == "All categories" else cat, out, sub="%s · %d items" % (date.today().strftime("%d %b %Y"), len(out)))
     st.caption("%d items shown. Other places stock can sit: B-grade %s · To recycle %s · Scrap %s" % (len(out), L.fmt(tab["bgrade"].sum()), L.fmt(tab["recycle"].sum()), L.fmt(tab["scrap"].sum())))
 
 
@@ -607,6 +607,30 @@ def share_table(title, headers, rows, num=(), bold=(), sub="", w0="34%"):
     st.markdown('<div class="sh"><div class="sh-t">%s<span>%s</span></div><table><thead><tr>%s</tr></thead><tbody>%s</tbody></table></div>' % (html.escape(title), html.escape(sub), th, body), unsafe_allow_html=True)
 
 
+def df_share(title, df, sub="", bold=(), w0=None, cap=None):
+    """Any table as the same one-page card as To produce: every row on the page, fits phone and desktop."""
+    df = df.copy(); cols = list(df.columns); low = {c.lower(): c for c in cols}
+    ic = low.get("item") or low.get("name"); bc = low.get("brand"); cc = low.get("category")
+    if ic:
+        def cell(r):
+            first = ("%s %s" % (r[bc], r[ic]) if bc and str(r[bc]).strip() else str(r[ic])).strip()
+            return first + (("\n" + str(r[cc])) if cc and str(r[cc]).strip() else "")
+        df[ic] = df.apply(cell, axis=1); df = df.drop(columns=[c for c in (bc, cc) if c])
+    if "date" in [c.lower() for c in df.columns] and "time" in [c.lower() for c in df.columns]:
+        dc = [c for c in df.columns if c.lower() == "date"][0]; tc = [c for c in df.columns if c.lower() == "time"][0]
+        df[dc] = df[dc].astype(str).str[5:] + "\n" + df[tc].astype(str); df = df.drop(columns=[tc])
+    heads = list(df.columns); num = set()
+    for i, c in enumerate(heads):
+        if pd.api.types.is_numeric_dtype(df[c]): num.add(i)
+    def f(v):
+        if v is None or (isinstance(v, float) and v != v): return ""
+        if isinstance(v, (int, float)) and not isinstance(v, bool): return L.fmt(v)
+        return str(v)
+    rows = [tuple(f(v) for v in r) for r in df.itertuples(index=False, name=None)]
+    share_table(title, [str(h).replace("_", " ") for h in heads], rows, num=num, bold={heads.index(b) for b in bold if b in heads}, sub=sub or ("%d rows" % len(rows)), w0=w0 or ("38%" if ic or heads[0].lower() in ("customer", "item") else "auto"))
+    if cap: st.caption(cap)
+
+
 def screen_orders():
     items, _, tab = load()
     st.subheader("Orders")
@@ -814,7 +838,7 @@ def screen_customers():
         st.caption("Choose a customer to see what is pending and everything sent to them." if not po.empty else "Choose a customer to see everything sent to them.")
         if not po.empty:
             g = po.groupby("Customer", as_index=False).agg(Lines=("Item", "count"), Pending_qty=("Pending", "sum"), Earliest_due=("Needed_by", "min"))
-            st.markdown("**Who has pending orders**"); st.dataframe(g.rename(columns={"Pending_qty": "Pending qty", "Earliest_due": "Earliest due"}), hide_index=True, **WIDE, column_config={"Pending qty": st.column_config.NumberColumn(format="%g")})
+            st.markdown("**Who has pending orders**"); df_share("Who has pending orders", g.rename(columns={"Pending_qty": "Pending qty", "Earliest_due": "Earliest due"}))
         return
     c = c.strip()
     po = L.pending_orders(S, c)
@@ -824,14 +848,14 @@ def screen_customers():
     m1.metric("Pending lines", len(po)); m2.metric("Dispatches", int(h[["Date", "Vehicle"]].drop_duplicates().shape[0]) if not h.empty else 0); m3.metric("Last sent", h["Date"].max() if not h.empty else "-")
     st.markdown("**Pending orders**")
     if po.empty: st.caption("Nothing pending.")
-    else: st.dataframe(po[["Category", "Item", "Pending", "Unit", "Needed_by", "Days_left"]].rename(columns={"Needed_by": "Needed by", "Days_left": "Days left"}), hide_index=True, **WIDE, column_config={"Pending": st.column_config.NumberColumn(format="%g")})
+    else: df_share("Pending orders, " + c, po[["Category", "Item", "Pending", "Unit", "Needed_by", "Days_left"]].rename(columns={"Needed_by": "Needed by", "Days_left": "Days left"}))
     st.markdown("**Total sent, by item**")
     if h.empty: st.caption("Nothing sent yet.")
     else:
         tot = h.groupby(["Item", "Unit"], as_index=False)["Qty"].sum().sort_values("Qty", ascending=False)
-        st.dataframe(tot, hide_index=True, **WIDE, column_config={"Qty": st.column_config.NumberColumn(format="%g")})
+        df_share("Total sent, " + c, tot)
         with st.expander("Every dispatch (%d lines)" % len(h)):
-            st.dataframe(h.drop(columns=["Customer"]), hide_index=True, **WIDE, column_config={"Qty": st.column_config.NumberColumn(format="%g")})
+            df_share("Every dispatch, " + c, h.drop(columns=["Customer"]))
         st.download_button("Download (CSV)", h.to_csv(index=False).encode(), "customer-%s.csv" % "".join(ch for ch in c if ch.isalnum())[:20], "text/csv", key="cs_dl")
 
 
@@ -929,7 +953,7 @@ def item_history(items, moves):
     c1.metric("In stock now", L.fmt(live["qty"].sum()) + " " + it["unit"])
     c2.metric("Total in", L.fmt(live[live["qty"] > 0]["qty"].sum())); c3.metric("Total out", L.fmt(-live[live["qty"] < 0]["qty"].sum()))
     by = live.groupby("type")["qty"].sum().rename(index=lambda t: KIND.get(t, t)).reset_index().rename(columns={"type": "Type", "qty": "Total"})
-    st.dataframe(by, hide_index=True, **WIDE)
+    df_share("Totals by type", by)
     m["Date"] = m["date"]; m["Time"] = m["ts"].str[11:16]; m["What"] = m["type"].map(lambda t: KIND.get(t, t))
     m["In (+)"] = m["qty"].where((m["qty"] > 0) & (m["bucket"] == "good")); m["Out (-)"] = (-m["qty"]).where((m["qty"] < 0) & (m["bucket"] == "good"))
     m["Where / who"] = m.apply(lambda r: " · ".join(x for x in [r["vehicle"], r["party"], ("Shift " + r["shift"]) if r["shift"] else "", r["machine"]] if x) + ("" if r["bucket"] == "good" else " [%s]" % r["bucket"]), axis=1)
@@ -937,7 +961,7 @@ def item_history(items, moves):
     out = m[["Date", "Time", "What", "In (+)", "Out (-)", "Balance", "Where / who", "By", "Note", "Status"]]
     newest = st.checkbox("Newest first", value=True, key="hist_new")
     out = out.iloc[::-1] if newest else out
-    st.dataframe(out, hide_index=True, **WIDE)
+    df_share("History", out.assign(Details=out[["Where / who", "By", "Note", "Status"]].apply(lambda r: "\n".join(x for x in r if str(x).strip()), axis=1)).drop(columns=["Where / who", "By", "Note", "Status"]))
     st.download_button("Download this item's history (CSV)", out.to_csv(index=False), "history-%s.csv" % it["id"], "text/csv")
 
 
@@ -980,7 +1004,7 @@ def screen_reports():
         cols = ["category", "brand", "name", "unit", "good", "hold"] + (["price", "value"] if IS_ADMIN else [])
         cc = {"category": "Category", "brand": "Brand", "name": "Item", "unit": "Unit", "good": st.column_config.NumberColumn("In stock", format="%g"), "hold": st.column_config.NumberColumn("On hold", format="%g")}
         if IS_ADMIN: cc.update({"price": st.column_config.NumberColumn("Price", format="₹%g"), "value": "Value"}); v = v.assign(value=v["value"].map(L.money))
-        st.dataframe(v[cols], hide_index=True, column_config=cc, **WIDE)
+        df_share("Stock, " + cat if cat != cats[0] else "Stock", v[cols].rename(columns={"category": "Category", "brand": "Brand", "name": "Item", "unit": "Unit", "good": "In stock", "hold": "On hold", "price": "Price", "value": "Value"}))
         st.download_button("Download stock sheet (CSV)", v[cols].to_csv(index=False), "stock.csv", "text/csv")
 
     with t_made:
@@ -993,15 +1017,15 @@ def screen_reports():
             c1, c2, c3 = st.columns(3); c1.metric("Entries", len(p)); c2.metric("Different items", p["item_id"].nunique()); c3.metric("Made", units_line(p))
             by = st.selectbox("Show totals by", ["name", "date", "machine", "shift", "user"], key="rp_by", format_func=lambda x: {"name": "Item", "date": "Day", "machine": "Machine", "shift": "Shift", "user": "Person"}[x])
             g = p.assign(**{by: p[by].replace("", "(not noted)")}).groupby([by, "unit"], as_index=False)["qty"].sum().rename(columns={"qty": "Made"}).sort_values("Made", ascending=False)
-            st.dataframe(g.rename(columns={by: {"name": "Item", "date": "Day", "machine": "Machine", "shift": "Shift", "user": "Person"}[by], "unit": "Unit"}), hide_index=True, column_config={"Made": st.column_config.NumberColumn(format="%g")}, **WIDE)
+            df_share("Made, by " + {"name": "item", "date": "day", "machine": "machine", "shift": "shift", "user": "person"}[by], g.rename(columns={by: {"name": "Item", "date": "Day", "machine": "Machine", "shift": "Shift", "user": "Person"}[by], "unit": "Unit"}), sub="%s to %s" % (d1, d2))
             full = p[["date", "time", "shift", "machine", "brand", "name", "unit", "qty", "user", "note"]].rename(columns={"qty": "made"}).sort_values(["date", "time"], ascending=False)
             with st.expander("Every production entry (%d)" % len(full)):
-                st.dataframe(full, hide_index=True, **WIDE)
+                df_share("Every production entry", full)
             st.download_button("Download CSV", full.to_csv(index=False), "production.csv", "text/csv")
         if not added.empty:
             ad = added.assign(time=added["ts"].str[11:16])[["date", "time", "category", "brand", "name", "unit", "qty", "user", "note"]].rename(columns={"qty": "added"}).sort_values(["date", "time"], ascending=False)
             with st.expander("Stock added directly with Add Stock, not as production (%d)" % len(ad)):
-                st.dataframe(ad, hide_index=True, **WIDE)
+                df_share("Stock added directly", ad)
 
     with t_sent:
         live = base[(base["date"] >= str(d1)) & (base["date"] <= str(d2))]
@@ -1011,10 +1035,10 @@ def screen_reports():
             c1, c2, c3 = st.columns(3); c1.metric("Loads", p["ref"].nunique() if "ref" in p else len(p)); c2.metric("Vehicles", p[p["vehicle"] != ""]["vehicle"].nunique()); c3.metric("Sent", units_line(p))
             by = st.selectbox("Show totals by", ["party", "vehicle", "name", "date"], key="rd_by", format_func=lambda x: {"party": "Customer", "vehicle": "Vehicle", "name": "Item", "date": "Day"}[x])
             g = p.assign(**{by: p[by].replace("", "(not noted)")}).groupby([by, "unit"], as_index=False)["qty"].sum().rename(columns={"qty": "Sent"}).sort_values("Sent", ascending=False)
-            st.dataframe(g.rename(columns={by: {"party": "Customer", "vehicle": "Vehicle", "name": "Item", "date": "Day"}[by], "unit": "Unit"}), hide_index=True, column_config={"Sent": st.column_config.NumberColumn(format="%g")}, **WIDE)
+            df_share("Sent, by " + {"party": "customer", "vehicle": "vehicle", "name": "item", "date": "day"}[by], g.rename(columns={by: {"party": "Customer", "vehicle": "Vehicle", "name": "Item", "date": "Day"}[by], "unit": "Unit"}), sub="%s to %s" % (d1, d2))
             full = p.assign(time=p["ts"].str[11:16])[["date", "time", "vehicle", "party", "brand", "name", "unit", "qty", "user"]].rename(columns={"qty": "sent"}).sort_values(["date", "time"], ascending=False)
             with st.expander("Every dispatch entry (%d)" % len(full)):
-                st.dataframe(full, hide_index=True, **WIDE)
+                df_share("Every dispatch entry", full)
             st.download_button("Download full list (CSV)", full.to_csv(index=False), "dispatch.csv", "text/csv")
 
     with t_in:
@@ -1023,14 +1047,14 @@ def screen_reports():
         else:
             st.metric("Received", units_line(p))
             full = p[["date", "category", "brand", "name", "unit", "qty", "user"]].rename(columns={"qty": "received"})
-            st.dataframe(full, hide_index=True, **WIDE); st.download_button("Download inward list (CSV)", full.to_csv(index=False), "inward.csv", "text/csv")
+            df_share("Received", full); st.download_button("Download inward list (CSV)", full.to_csv(index=False), "inward.csv", "text/csv")
 
     with t_low:
         low = tab[(tab["min_level"] > 0) & (tab["good"] < tab["min_level"])][["category", "brand", "name", "unit", "good", "min_level"]]
         if low.empty: st.success("Nothing is below its minimum. (Set minimums in Admin → Items.)")
         else:
             st.warning("%d items are below their minimum." % len(low))
-            st.dataframe(low.rename(columns={"good": "In stock", "min_level": "Minimum"}), hide_index=True, **WIDE)
+            df_share("Below minimum", low.rename(columns={"good": "In stock", "min_level": "Minimum"}), bold=("In stock",))
 
     with t_hist: item_history(items, moves)
 
@@ -1043,7 +1067,7 @@ def screen_reports():
         if wl.empty: st.info("Nothing moved in these dates.")
         else:
             c1, c2, c3 = st.columns(3); c1.metric("Items", len(wl)); c2.metric("Made", L.fmt(wl["Made"].sum())); c3.metric("Sent", L.fmt(wl["Sent"].sum()))
-            st.dataframe(wl, hide_index=True, **WIDE, column_config={c: st.column_config.NumberColumn(c, format="%g") for c in ["Opening", "Made", "Received", "Sent", "Other", "Closing"]})
+            df_share("Weekly list", wl, sub="%s to %s" % (w1, w2))
             ex = wl.copy(); ex["Factory count"] = ""; ex["Difference"] = ""
             try:
                 buf = io.BytesIO(); ex.to_excel(buf, index=False, sheet_name="Weekly list"); st.download_button("Download (Excel)", buf.getvalue(), "weekly-list-%s-to-%s.xlsx" % (w1, w2), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="wk_x")
@@ -1060,9 +1084,9 @@ def screen_reports():
             hh = h[h["Customer"].isin(sel)] if sel else h
             st.markdown("**Total sent, by item**")
             tot = hh.groupby(["Customer", "Item", "Unit"], as_index=False)["Qty"].sum()
-            st.dataframe(tot, hide_index=True, **WIDE, column_config={"Qty": st.column_config.NumberColumn("Qty", format="%g")})
+            df_share("Total sent, by item", tot)
             st.markdown("**Every dispatch**")
-            st.dataframe(hh, hide_index=True, **WIDE, column_config={"Qty": st.column_config.NumberColumn("Qty", format="%g")})
+            df_share("Every dispatch", hh)
             st.download_button("Download (CSV)", hh.to_csv(index=False).encode(), "customer-history.csv", "text/csv", key="cu_dl")
 
     with t_veh:
@@ -1072,7 +1096,7 @@ def screen_reports():
         if vd.empty: st.info("No dispatch by this vehicle in the period chosen at the top.")
         else:
             c1, c2, c3 = st.columns(3); c1.metric("Days it went", len(vd)); c2.metric("Trips", int(vd["Trips"].sum())); c3.metric("Customers carried", int(vd["Customers"].sum()))
-            st.dataframe(vd, hide_index=True, **WIDE)
+            df_share("Vehicle days", vd)
             st.caption("A vehicle counts as 1 trip per day unless a second trip was saved. If it really went twice on a day, open Fix entries and set 'Trip of the day' to 2 on that dispatch.")
             st.download_button("Download (CSV)", vd.to_csv(index=False).encode(), "vehicle-days.csv", "text/csv", key="vh_dl")
 
