@@ -10,7 +10,7 @@ import importlib
 import logic as L
 import wa
 import store as _store
-RELEASE = "2026-11-28-a"        # change on every release; it makes the app reload its own parts after an update
+RELEASE = "2026-11-28-c"        # change on every release; it makes the app reload its own parts after an update
 if getattr(L, "LOGIC_VERSION", None) != RELEASE or "Fleet" not in _store.SCHEMA:
     importlib.reload(_store); importlib.reload(L)
 from store import Store, LocalBackend, SheetsBackend, today, new_id, SCHEMA
@@ -45,7 +45,7 @@ header[data-testid="stHeader"]{background:transparent}
 .sh td{padding:.38rem .4rem;border-bottom:1px solid var(--line);vertical-align:top;word-break:break-word;color:var(--ink)}
 .sh .sm{color:var(--mute);font-size:.72em}.sh .n{text-align:right;white-space:nowrap}.sh .b{font-weight:700;color:#b3261e}
 .sh tr:nth-child(even) td{background:#f8fbf9}
-@media(max-width:640px){.sh table{font-size:.72rem}.sh td,.sh th{padding:.3rem .25rem}}
+@media(max-width:640px){.sh{padding:.5rem .35rem;border-radius:12px}.sh table{font-size:.7rem}.sh td,.sh th{padding:.28rem .2rem}.sh th{font-size:.58rem;letter-spacing:0;word-break:normal;overflow-wrap:normal}.sh td{word-break:normal;overflow-wrap:anywhere}.sh td.n,.sh td:nth-child(2){overflow-wrap:normal}.sh.mid table{font-size:.66rem}.sh.dense table{font-size:.6rem}.sh.dense th{font-size:.5rem}.sh.dense th:first-child{width:30%!important}.sh.dense td,.sh.dense th{padding:.25rem .12rem}.sh-t{font-size:.9rem;flex-wrap:wrap}.sh-t span{font-size:.7rem}}
 /* cards */
 div[data-testid="stMetric"]{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:.8rem 1rem;box-shadow:0 2px 8px rgba(23,38,29,.05)}
 div[data-testid="stMetricValue"]{font-size:1.5rem;font-weight:700;color:var(--g1)}
@@ -604,7 +604,7 @@ def share_table(title, headers, rows, num=(), bold=(), sub="", w0="34%"):
     body = ""
     for r in rows:
         body += "<tr>" + "".join('<td class="%s%s">%s</td>' % ("n" if i in num else "", " b" if i in bold else "", "<br>".join(('<span class="sm">%s</span>' % html.escape(p)) if k else html.escape(p) for k, p in enumerate(str(c).split("\n")))) for i, c in enumerate(r)) + "</tr>"
-    st.markdown('<div class="sh"><div class="sh-t">%s<span>%s</span></div><table><thead><tr>%s</tr></thead><tbody>%s</tbody></table></div>' % (html.escape(title), html.escape(sub), th, body), unsafe_allow_html=True)
+    st.markdown('<div class="sh%s"><div class="sh-t">%s<span>%s</span></div><table><thead><tr>%s</tr></thead><tbody>%s</tbody></table></div>' % (" dense" if len(headers) >= 6 else (" mid" if len(headers) == 5 else ""), html.escape(title), html.escape(sub), th, body), unsafe_allow_html=True)
 
 
 def df_share(title, df, sub="", bold=(), w0=None, cap=None):
